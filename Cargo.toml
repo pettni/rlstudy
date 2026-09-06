@@ -1,0 +1,10 @@
+[package]
+name = "rlstudy"
+version = "0.1.0"
+edition = "2024"
+description = "A small study crate for data types and algorithms"
+license = "MIT"
+
+[dependencies]
+num-traits = "0.2"
+rand = "0.10.2"
