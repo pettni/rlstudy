@@ -34,14 +34,14 @@ pub fn grid_world(n: usize) -> Model {
     ];
 
     let mut s_sa: Vec<Vec<Distribution<u64>>> = Vec::with_capacity(num_states);
-    let mut r_sa: Vec<Vec<Distribution<f64>>> = Vec::with_capacity(num_states);
+    let mut r_sa: Vec<Vec<f64>> = Vec::with_capacity(num_states);
 
     for s in 0..num_states {
         let row = s / n;
         let col = s % n;
 
         let mut s_a: Vec<Distribution<u64>> = Vec::with_capacity(actions.len());
-        let mut r_a: Vec<Distribution<f64>> = Vec::with_capacity(actions.len());
+        let mut r_a: Vec<f64> = Vec::with_capacity(actions.len());
 
         for a in 0..actions.len() {
             let next = match a {
@@ -64,7 +64,7 @@ pub fn grid_world(n: usize) -> Model {
             }
 
             s_a.push(Distribution::new(vec![(1.0, next as u64)]));
-            r_a.push(Distribution::new(vec![(1.0, reward)]));
+            r_a.push(reward);
         }
 
         s_sa.push(s_a);
@@ -84,6 +84,6 @@ mod tests {
         assert_eq!(m.states.len(), 9);
         assert_eq!(m.actions.len(), 5);
         assert_eq!(m.p_s_sa.len(), 9);
-        assert_eq!(m.p_r_sa.len(), 9);
+        assert_eq!(m.r_sa.len(), 9);
     }
 }

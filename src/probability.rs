@@ -49,6 +49,21 @@ impl<T> Distribution<T> {
         }
         &self.pt.last().expect("distribution is non-empty").1
     }
+
+    /// Iterate over `(probability, value)` pairs.
+    pub fn iter(&self) -> std::slice::Iter<'_, (f32, T)> {
+        self.pt.iter()
+    }
+
+    /// Number of outcomes in the distribution.
+    pub fn len(&self) -> usize {
+        self.pt.len()
+    }
+
+    /// True if the distribution contains no outcomes.
+    pub fn is_empty(&self) -> bool {
+        self.pt.is_empty()
+    }
 }
 
 impl<T> Index<usize> for Distribution<T> {

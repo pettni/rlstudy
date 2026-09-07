@@ -39,8 +39,8 @@ pub struct Model {
     pub actions: Vec<Action>,
     // p(s'|s,a) for each state-action pair
     pub p_s_sa: Vec<Vec<probability::Distribution<u64>>>,
-    // p(r|s,a) for each state-action pair
-    pub p_r_sa: Vec<Vec<probability::Distribution<f64>>>,
+    // r(s,a) for each state-action pair
+    pub r_sa: Vec<Vec<f64>>,
 }
 
 impl Model {
@@ -48,13 +48,13 @@ impl Model {
         states: Vec<State>,
         actions: Vec<Action>,
         p_s_sa: Vec<Vec<probability::Distribution<u64>>>,
-        p_r_sa: Vec<Vec<probability::Distribution<f64>>>,
+        r_sa: Vec<Vec<f64>>,
     ) -> Self {
         Self {
             states,
             actions,
             p_s_sa,
-            p_r_sa,
+            r_sa,
         }
     }
 }
@@ -70,7 +70,7 @@ impl System for Model {
 
     fn step(&mut self, state: usize, action: usize) -> (usize, f64) {
         let next_state = *self.p_s_sa[state][action].sample() as usize;
-        let reward = *self.p_r_sa[state][action].sample();
+        let reward = self.r_sa[state][action];
         (next_state, reward)
     }
 }

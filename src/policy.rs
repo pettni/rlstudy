@@ -1,58 +1,87 @@
 use crate::probability::Distribution;
 
+/// A policy maps states to action probabilities.
 pub trait Policy {
-    /// Determine the action
-    fn select_action(&self, state: usize) -> usize;
+    fn num_states(&self) -> usize;
+    fn num_actions(&self) -> usize;
 
-    /// Get action probability distribution
+    /// Probability of taking `action` in `state`.
     fn prob(&self, state: usize, action: usize) -> f64;
 }
 
-/// Deterministic policy
+/// Sample an action from the policy for a given state.
+pub fn sample_action(policy: &dyn Policy, state: usize) -> usize {
+    let data: Vec<(f32, usize)> = (0..policy.num_actions())
+        .map(|a| (policy.prob(state, a) as f32, a))
+        .collect();
+    let dist = Distribution::new(data);
+    *dist.sample()
+}
 
+/// Deterministic policy
 #[derive(Debug, Clone)]
 pub struct DeterministicPolicy {
+    n_actions: usize,
     a_s: Vec<usize>,
 }
 
 impl DeterministicPolicy {
-    pub fn new(a_s: Vec<usize>) -> Self {
-        Self { a_s }
+    pub fn new(n_actions: usize, a_s: Vec<usize>) -> Self {
+        Self { n_actions, a_s }
+    }
+
+    pub fn select_action(&self, state: usize) -> usize {
+        self.a_s[state]
     }
 }
 
 impl Policy for DeterministicPolicy {
-    fn select_action(&self, state: usize) -> usize {
-        self.a_s[state]
+    fn num_states(&self) -> usize {
+        self.a_s.len()
+    }
+
+    fn num_actions(&self) -> usize {
+        self.n_actions
     }
 
     fn prob(&self, state: usize, action: usize) -> f64 {
-        if self.a_s[state] == action { 1. } else { 0. }
+        if self.a_s[state] == action { 1.0 } else { 0.0 }
     }
 }
 
 /// Stochastic policy
-
 #[derive(Debug, Clone)]
 pub struct StochasticPolicy {
+    n_actions: usize,
     p_a_s: Vec<Distribution<usize>>,
 }
 
 impl StochasticPolicy {
-    pub fn new(p_a_s: Vec<Distribution<usize>>) -> Self {
-        Self { p_a_s }
+    pub fn new(n_actions: usize, p_a_s: Vec<Distribution<usize>>) -> Self {
+        Self { n_actions, p_a_s }
     }
 
     pub fn uniform(num_states: usize, num_actions: usize) -> Self {
         let actions = (0..num_actions).collect::<Vec<_>>();
         let p_a_s = vec![Distribution::uniform(actions); num_states];
-        Self { p_a_s }
+        Self {
+            n_actions: num_actions,
+            p_a_s,
+        }
+    }
+
+    pub fn select_action(&self, state: usize) -> usize {
+        *self.p_a_s[state].sample()
     }
 }
 
 impl Policy for StochasticPolicy {
-    fn select_action(&self, state: usize) -> usize {
-        *self.p_a_s[state].sample()
+    fn num_states(&self) -> usize {
+        self.p_a_s.len()
+    }
+
+    fn num_actions(&self) -> usize {
+        self.n_actions
     }
 
     fn prob(&self, state: usize, action: usize) -> f64 {
@@ -69,6 +98,9 @@ mod tests {
         let num_states = 3;
         let num_actions = 5;
         let policy = StochasticPolicy::uniform(num_states, num_actions);
+
+        assert_eq!(policy.num_states(), num_states);
+        assert_eq!(policy.num_actions(), num_actions);
 
         for state in 0..num_states {
             for _ in 0..100 {
