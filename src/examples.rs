@@ -13,13 +13,12 @@ use crate::probability::Distribution;
 ///
 /// Actions are up, right, down, left, stay. Moving into a wall leaves the
 /// agent in place. Rewards are assigned to states as follows:
-///
-/// - The bottom-right goal state (`n*n - 1`) yields `+1.0`.
-/// - The two neighbouring states above and to the left of the goal state
-///   (`n*n - n - 1` and `n*n - n`) yield `-1.0`.
-/// - All other states yield `0.0`.
 pub fn grid_world(n: usize) -> Model {
     let num_states = n * n;
+
+    const R_TARGET: f64 = 1.0;
+    const R_BOUNDARY: f64 = -1.0;
+    const R_FORBIDDEN: f64 = -1.0;
 
     let states: Vec<State> = (0..num_states)
         .map(|i| State::new(format!("s{}", i + 1), i as u64))
@@ -52,16 +51,12 @@ pub fn grid_world(n: usize) -> Model {
                 _ => s,                    // stay / hit a wall
             };
 
-            let mut reward = 0.;
-            if s == num_states - 1 {
-                reward = 1.;
-            }
-            if s == num_states - n {
-                reward = -1.;
-            }
-            if s == num_states - 1 - n {
-                reward = -1.;
-            }
+            let reward = match (s, a, next) {
+                (s0, _, s1) if s0 == s1 && a != 4 => R_BOUNDARY, // hit a wall
+                (_, _, s1) if s1 == num_states - n || s1 == num_states - n - 1 => R_FORBIDDEN, // hit a wall
+                (_, _, s1) if s1 == num_states - 1 => R_TARGET,
+                _ => 0.,
+            };
 
             s_a.push(Distribution::new(vec![(1.0, next as u64)]));
             r_a.push(reward);

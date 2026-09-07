@@ -9,14 +9,15 @@ pub mod truncated_policy_iteration;
 pub struct SolveResult {
     pub policy: Box<dyn Policy>,
     pub value: Vec<f64>,
+    pub iterations: u64,
 }
 
 pub trait ModelBasedSolver {
-    fn solve(&mut self, model: &Model) -> SolveResult;
+    fn solve(&mut self, model: &Model, gamma: f64) -> SolveResult;
 }
 
 pub trait ModelFreeSolver {
-    fn solve(&mut self, system: &mut dyn System) -> SolveResult;
+    fn solve(&mut self, system: &mut dyn System, gamma: f64) -> SolveResult;
 }
 
 /// State-action probability matrix

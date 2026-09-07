@@ -10,29 +10,53 @@ pub enum StoppingCriterion {
     Tolerance(f64),
 }
 
+impl StoppingCriterion {
+    pub fn should_stop(&self, iter: u64, a1: &Array1<f64>, a2: &Array1<f64>) -> bool {
+        match self {
+            StoppingCriterion::Iterations(max_iter) => iter >= *max_iter,
+            StoppingCriterion::Tolerance(tol) => {
+                let max_diff = (a1 - a2).mapv(abs).iter().fold(0.0f64, |a, &b| a.max(b));
+                max_diff <= *tol
+            }
+        }
+    }
+}
+
 pub struct TruncatedPolicyIteration {
     /// Outer loop convergence criterion
-    tolerance: f64,
+    outer: StoppingCriterion,
     /// Inner loop stopping crietrion
     ///  1 special case: value iteration
     ///  inf special case: policy iteration
-    stopping_criterion: StoppingCriterion,
-    /// Discount factor 0 < gamma < 1
-    gamma: f64,
+    inner: StoppingCriterion,
 }
 
 impl TruncatedPolicyIteration {
-    pub fn new(tolerance: f64, stopping_criterion: StoppingCriterion, gamma: f64) -> Self {
+    pub fn new(outer: StoppingCriterion, inner: StoppingCriterion) -> Self {
+        if let StoppingCriterion::Iterations(u64::MAX) = outer {
+            panic!("Outer can't have max-iterations infty");
+        }
+
+        Self { outer, inner }
+    }
+
+    pub fn value_iteration(stopping: StoppingCriterion) -> Self {
         Self {
-            tolerance,
-            stopping_criterion,
-            gamma,
+            outer: stopping,
+            inner: StoppingCriterion::Iterations(1),
+        }
+    }
+
+    pub fn policy_iteration(stopping: StoppingCriterion) -> Self {
+        Self {
+            outer: stopping,
+            inner: StoppingCriterion::Tolerance(1e-6),
         }
     }
 }
 
 impl ModelBasedSolver for TruncatedPolicyIteration {
-    fn solve(&mut self, model: &Model) -> SolveResult {
+    fn solve(&mut self, model: &Model, gamma: f64) -> SolveResult {
         let n_s = model.states.len();
         let n_a = model.actions.len();
 
@@ -41,38 +65,29 @@ impl ModelBasedSolver for TruncatedPolicyIteration {
             model,
             pi.as_ref(),
             &Array1::<f64>::zeros(pi.num_states()),
-            self.gamma,
-            &self.stopping_criterion,
+            gamma,
+            &self.inner,
         );
 
-        for _ in 0..1000 {
-            let new_pi = improve_policy(model, &v_pi, self.gamma);
-            let new_v_pi = policy_evaluation(
-                model,
-                new_pi.as_ref(),
-                &v_pi,
-                self.gamma,
-                &self.stopping_criterion,
-            );
+        for iter in 1.. {
+            let new_pi = improve_policy(model, &v_pi, gamma);
+            let new_v_pi = policy_evaluation(model, new_pi.as_ref(), &v_pi, gamma, &self.inner);
 
-            let should_break = (&v_pi - &new_v_pi)
-                .mapv(abs)
-                .iter()
-                .fold(0.0f64, |a, &b| a.max(b))
-                < self.tolerance;
+            let should_break = self.outer.should_stop(iter, &v_pi, &new_v_pi);
 
             pi = new_pi;
             v_pi = new_v_pi;
 
             if should_break {
-                break;
+                return SolveResult {
+                    policy: pi,
+                    value: v_pi.to_vec(),
+                    iterations: iter,
+                };
             }
         }
 
-        SolveResult {
-            policy: pi,
-            value: v_pi.to_vec(),
-        }
+        unreachable!("TruncatedPolicyIteration: unreachable");
     }
 }
 
@@ -92,22 +107,12 @@ fn policy_evaluation(
     let mut v_pi = v_last.clone();
     for iter in 1.. {
         // V_pi(s) = r_pi(s) + γ * sum_{s'} P_pi(s,s') v(s')
-        let v_pi_new = &r_pi_s + gamma * p_pi_s_s.dot(&v_pi);
-
-        match sc {
-            StoppingCriterion::Iterations(max_iter) => {
-                if iter >= *max_iter {
-                    return v_pi_new;
-                }
-            }
-            StoppingCriterion::Tolerance(tol) => {
-                if check_tol(&v_pi_new, &v_pi, *tol) {
-                    return v_pi_new;
-                }
-            }
+        let new_v_pi = &r_pi_s + gamma * p_pi_s_s.dot(&v_pi);
+        if sc.should_stop(iter, &v_pi, &new_v_pi) {
+            return new_v_pi;
         }
 
-        v_pi = v_pi_new;
+        v_pi = new_v_pi;
     }
 
     unreachable!()
@@ -142,9 +147,4 @@ fn improve_policy(model: &Model, v_s: &Array1<f64>, gamma: f64) -> Box<dyn Polic
         .collect();
 
     Box::new(DeterministicPolicy::new(n_a, actions))
-}
-
-fn check_tol(a1: &Array1<f64>, a2: &Array1<f64>, tol: f64) -> bool {
-    let max_diff = (a1 - a2).mapv(abs).iter().fold(0.0f64, |a, &b| a.max(b));
-    max_diff <= tol
 }
