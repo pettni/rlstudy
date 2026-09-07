@@ -1,4 +1,4 @@
-use crate::model::{Action, Model, State};
+use crate::model::{Action, State, TabularModel};
 use crate::probability::Distribution;
 
 /// Construct a custom deterministic `n x n` grid-world MDP.
@@ -13,7 +13,7 @@ use crate::probability::Distribution;
 ///
 /// Actions are up, right, down, left, stay. Moving into a wall leaves the
 /// agent in place. Rewards are assigned to states as follows:
-pub fn grid_world(n: usize) -> Model {
+pub fn grid_world(n: usize) -> Result<TabularModel, String> {
     let num_states = n * n;
 
     const R_TARGET: f64 = 1.0;
@@ -21,25 +21,25 @@ pub fn grid_world(n: usize) -> Model {
     const R_FORBIDDEN: f64 = -1.0;
 
     let states: Vec<State> = (0..num_states)
-        .map(|i| State::new(format!("s{}", i + 1), i as u64))
+        .map(|i| State::new(format!("s{}", i + 1)))
         .collect();
 
     let actions: Vec<Action> = vec![
-        Action::new("up", 0),
-        Action::new("right", 1),
-        Action::new("down", 2),
-        Action::new("left", 3),
-        Action::new("stay", 4),
+        Action::new("up"),
+        Action::new("right"),
+        Action::new("down"),
+        Action::new("left"),
+        Action::new("stay"),
     ];
 
-    let mut s_sa: Vec<Vec<Distribution<u64>>> = Vec::with_capacity(num_states);
+    let mut s_sa: Vec<Vec<Distribution<usize>>> = Vec::with_capacity(num_states);
     let mut r_sa: Vec<Vec<f64>> = Vec::with_capacity(num_states);
 
     for s in 0..num_states {
         let row = s / n;
         let col = s % n;
 
-        let mut s_a: Vec<Distribution<u64>> = Vec::with_capacity(actions.len());
+        let mut s_a: Vec<Distribution<usize>> = Vec::with_capacity(actions.len());
         let mut r_a: Vec<f64> = Vec::with_capacity(actions.len());
 
         for a in 0..actions.len() {
@@ -58,7 +58,7 @@ pub fn grid_world(n: usize) -> Model {
                 _ => 0.,
             };
 
-            s_a.push(Distribution::new(vec![(1.0, next as u64)]));
+            s_a.push(Distribution::new(vec![(1.0, next)])?);
             r_a.push(reward);
         }
 
@@ -66,7 +66,7 @@ pub fn grid_world(n: usize) -> Model {
         r_sa.push(r_a);
     }
 
-    Model::new(states, actions, s_sa, r_sa)
+    TabularModel::new(states, actions, s_sa, r_sa)
 }
 
 #[cfg(test)]
@@ -75,10 +75,14 @@ mod tests {
 
     #[test]
     fn grid_world_builds() {
-        let m = grid_world(3);
-        assert_eq!(m.states.len(), 9);
-        assert_eq!(m.actions.len(), 5);
-        assert_eq!(m.p_s_sa.len(), 9);
-        assert_eq!(m.r_sa.len(), 9);
+        let m = grid_world(3).unwrap();
+        assert_eq!(m.states().len(), 9);
+        assert_eq!(m.actions().len(), 5);
+        assert_eq!(m.states()[0].name, "s1");
+        assert_eq!(m.actions()[1].name, "right");
+
+        let next_state: usize = m.transitions(0, 1).iter().next().unwrap().1;
+        assert_eq!(next_state, 1);
+        assert_eq!(m.reward(0, 1), 0.0);
     }
 }
