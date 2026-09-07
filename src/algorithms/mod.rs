@@ -14,6 +14,19 @@ pub struct SolveResult {
     pub termination: TerminationReason,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct ValueSnapshot {
+    pub policy_iteration: usize,
+    pub evaluation_sweep: usize,
+    pub value: Vec<f64>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SolveTrace {
+    pub result: SolveResult,
+    pub snapshots: Vec<ValueSnapshot>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TerminationReason {
     Converged,

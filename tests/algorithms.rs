@@ -107,3 +107,22 @@ fn solver_reports_iteration_limit() {
 
     assert_eq!(result.termination, TerminationReason::IterationLimit);
 }
+
+#[test]
+fn solver_trace_records_each_evaluation_sweep() {
+    let model = grid_world(3).unwrap();
+    let solver = TruncatedPolicyIteration::new(
+        StoppingCriterion::iterations(1).unwrap(),
+        StoppingCriterion::iterations(2).unwrap(),
+    );
+
+    let trace = solver.solve_with_trace(&model, 0.5).unwrap();
+
+    assert_eq!(trace.snapshots.len(), 5);
+    assert_eq!(trace.snapshots[0].evaluation_sweep, 0);
+    assert_eq!(trace.snapshots[0].policy_iteration, 0);
+    assert_eq!(trace.snapshots[2].policy_iteration, 0);
+    assert_eq!(trace.snapshots[3].policy_iteration, 1);
+    assert_eq!(trace.snapshots[4].evaluation_sweep, 4);
+    assert_eq!(trace.snapshots[4].value, trace.result.value);
+}

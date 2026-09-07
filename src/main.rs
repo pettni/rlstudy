@@ -6,6 +6,9 @@ use rlstudy::algorithms::{
 use rlstudy::environment::{BlackBox, Environment};
 use rlstudy::environments::grid_world;
 use rlstudy::model::TabularModel;
+use std::fs::File;
+use std::io::{BufWriter, Write};
+use std::path::PathBuf;
 
 #[derive(Subcommand, Clone)]
 enum Solver {
@@ -46,6 +49,8 @@ struct Args {
 enum Commands {
     /// Run a solver against a system.
     Solve(SolveArgs),
+    /// Write solver value snapshots as CSV.
+    Trace(TraceArgs),
 }
 
 #[derive(Parser)]
@@ -60,13 +65,50 @@ struct SolveArgs {
     pub gamma: f64,
 }
 
+#[derive(Parser)]
+struct TraceArgs {
+    #[command(flatten)]
+    solve: SolveArgs,
+
+    #[arg(short, long)]
+    output: PathBuf,
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
     match args.command {
         Commands::Solve(cmd_args) => solve_run(&cmd_args)?,
+        Commands::Trace(cmd_args) => trace_run(&cmd_args)?,
     }
 
+    Ok(())
+}
+
+fn trace_run(args: &TraceArgs) -> Result<(), Box<dyn std::error::Error>> {
+    let system = build_system(&args.solve.system)?;
+    let solver = build_solver(&args.solve)?;
+    let model = system.as_model().ok_or("tracing requires a model system")?;
+    let SelectedSolver::ModelBased(solver) = solver else {
+        return Err("tracing requires a model-based solver".into());
+    };
+    let trace = solver.solve_with_trace(model, args.solve.gamma)?;
+    let solver_name = solver_name(&args.solve.solver);
+    let mut output = BufWriter::new(File::create(&args.output)?);
+
+    writeln!(
+        output,
+        "solver,policy_iteration,evaluation_sweep,state,value"
+    )?;
+    for snapshot in trace.snapshots {
+        for (state, value) in snapshot.value.into_iter().enumerate() {
+            writeln!(
+                output,
+                "{},{},{},{},{}",
+                solver_name, snapshot.policy_iteration, snapshot.evaluation_sweep, state, value
+            )?;
+        }
+    }
     Ok(())
 }
 
@@ -192,11 +234,7 @@ fn run_solver(
 }
 
 fn print_result(system: &str, solver: &Solver, result: &SolveResult, gamma: f64) {
-    let solver_name = match solver {
-        Solver::VI(_) => "value-iteration",
-        Solver::PI(_) => "policy-iteration",
-        Solver::TPI(_) => "truncated-policy-iteration",
-    };
+    let solver_name = solver_name(solver);
     println!(
         "system={} solver={} gamma={:.3}",
         system, solver_name, gamma
@@ -216,5 +254,13 @@ fn print_result(system: &str, solver: &Solver, result: &SolveResult, gamma: f64)
                 );
             }
         }
+    }
+}
+
+fn solver_name(solver: &Solver) -> &'static str {
+    match solver {
+        Solver::VI(_) => "value-iteration",
+        Solver::PI(_) => "policy-iteration",
+        Solver::TPI(_) => "truncated-policy-iteration",
     }
 }

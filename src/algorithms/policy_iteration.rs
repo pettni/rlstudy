@@ -1,4 +1,6 @@
-use crate::algorithms::{ModelBasedSolver, SolveResult, TerminationReason};
+use crate::algorithms::{
+    ModelBasedSolver, SolveResult, SolveTrace, TerminationReason, ValueSnapshot,
+};
 use crate::model::TabularModel;
 use crate::policy::TabularPolicy;
 use ndarray::{Array1, Array2, Array3, Axis, Ix2};
@@ -63,6 +65,22 @@ pub struct TruncatedPolicyIteration {
     inner: StoppingCriterion,
 }
 
+struct TraceRecorder {
+    evaluation_sweep: usize,
+    snapshots: Vec<ValueSnapshot>,
+}
+
+impl TraceRecorder {
+    fn record(&mut self, policy_iteration: usize, value: &Array1<f64>) {
+        self.evaluation_sweep += 1;
+        self.snapshots.push(ValueSnapshot {
+            policy_iteration,
+            evaluation_sweep: self.evaluation_sweep,
+            value: value.to_vec(),
+        });
+    }
+}
+
 impl TruncatedPolicyIteration {
     pub fn new(outer: StoppingCriterion, inner: StoppingCriterion) -> Self {
         Self { outer, inner }
@@ -81,15 +99,21 @@ impl TruncatedPolicyIteration {
             inner: StoppingCriterion::convergence(1e-6, 10_000).unwrap(),
         }
     }
-}
 
-impl ModelBasedSolver for TruncatedPolicyIteration {
-    fn solve(&self, model: &TabularModel, gamma: f64) -> Result<SolveResult, String> {
+    pub fn solve_with_trace(&self, model: &TabularModel, gamma: f64) -> Result<SolveTrace, String> {
         if !gamma.is_finite() || !(0.0..1.0).contains(&gamma) {
             return Err("gamma must be finite and in [0, 1)".into());
         }
         let n_s = model.states().len();
         let n_a = model.actions().len();
+        let mut trace = TraceRecorder {
+            evaluation_sweep: 0,
+            snapshots: vec![ValueSnapshot {
+                policy_iteration: 0,
+                evaluation_sweep: 0,
+                value: vec![0.0; n_s],
+            }],
+        };
 
         let mut pi = TabularPolicy::uniform(n_s, n_a).expect("model has states and actions");
         let mut v_pi = policy_evaluation(
@@ -98,28 +122,39 @@ impl ModelBasedSolver for TruncatedPolicyIteration {
             &Array1::<f64>::zeros(pi.num_states()),
             gamma,
             &self.inner,
+            0,
+            &mut trace,
         );
 
         for iter in 1.. {
             let new_pi = improve_policy(model, &v_pi, gamma);
-            let new_v_pi = policy_evaluation(model, &new_pi, &v_pi, gamma, &self.inner);
-
+            let new_v_pi =
+                policy_evaluation(model, &new_pi, &v_pi, gamma, &self.inner, iter, &mut trace);
             let termination = self.outer.stop_reason(iter, &v_pi, &new_v_pi);
 
             pi = new_pi;
             v_pi = new_v_pi;
 
             if let Some(termination) = termination {
-                return Ok(SolveResult {
-                    policy: pi,
-                    value: v_pi.to_vec(),
-                    iterations: iter,
-                    termination,
+                return Ok(SolveTrace {
+                    result: SolveResult {
+                        policy: pi,
+                        value: v_pi.to_vec(),
+                        iterations: iter,
+                        termination,
+                    },
+                    snapshots: trace.snapshots,
                 });
             }
         }
 
         unreachable!("TruncatedPolicyIteration: unreachable");
+    }
+}
+
+impl ModelBasedSolver for TruncatedPolicyIteration {
+    fn solve(&self, model: &TabularModel, gamma: f64) -> Result<SolveResult, String> {
+        Ok(self.solve_with_trace(model, gamma)?.result)
     }
 }
 
@@ -129,6 +164,8 @@ fn policy_evaluation(
     v_last: &Array1<f64>,
     gamma: f64,
     sc: &StoppingCriterion,
+    policy_iteration: usize,
+    trace: &mut TraceRecorder,
 ) -> Array1<f64> {
     // R_pi(s)
     let r_pi_s = policy_reward(model, pi);
@@ -140,6 +177,7 @@ fn policy_evaluation(
     for iter in 1.. {
         // V_pi(s) = r_pi(s) + γ * sum_{s'} P_pi(s,s') v(s')
         let new_v_pi = &r_pi_s + gamma * p_pi_s_s.dot(&v_pi);
+        trace.record(policy_iteration, &new_v_pi);
         if sc.stop_reason(iter, &v_pi, &new_v_pi).is_some() {
             return new_v_pi;
         }
