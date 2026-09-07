@@ -42,7 +42,7 @@ impl<T> Distribution<T> {
     }
 }
 
-impl<T: Ord> Distribution<T> {
+impl<T: PartialOrd> Distribution<T> {
     /// Constructor from paired data
     pub fn new(data: Vec<(f64, T)>) -> Result<Self, String> {
         let mut data: Vec<_> = data
@@ -54,14 +54,34 @@ impl<T: Ord> Distribution<T> {
             return Err("at least one probability must be non-zero".into());
         }
 
-        data.sort_by(|(_, left), (_, right)| left.cmp(right));
-
-        if data.windows(2).any(|pair| pair[0].1 == pair[1].1) {
-            return Err("distribution outcomes must be unique".into());
+        let mut incomparable = false;
+        data.sort_by(|(_, left), (_, right)| {
+            left.partial_cmp(right).unwrap_or_else(|| {
+                incomparable = true;
+                std::cmp::Ordering::Equal
+            })
+        });
+        if incomparable {
+            return Err("distribution outcomes must be comparable".into());
         }
 
-        let ps_sum: f64 = data.iter().map(|(p, _)| p).sum();
-        let pt = data.into_iter().map(|(p, t)| (p / ps_sum, t)).collect();
+        let mut deduplicated: Vec<(f64, T)> = Vec::with_capacity(data.len());
+        for (probability, outcome) in data {
+            if let Some((existing_probability, _)) = deduplicated
+                .last_mut()
+                .filter(|(_, existing_outcome)| existing_outcome == &outcome)
+            {
+                *existing_probability += probability;
+            } else {
+                deduplicated.push((probability, outcome));
+            }
+        }
+
+        let ps_sum: f64 = deduplicated.iter().map(|(p, _)| p).sum();
+        let pt = deduplicated
+            .into_iter()
+            .map(|(p, t)| (p / ps_sum, t))
+            .collect();
 
         Ok(Self { pt })
     }
@@ -73,10 +93,29 @@ impl<T: Ord> Distribution<T> {
     }
 
     pub fn probability_of(&self, value: &T) -> f64 {
+        if value.partial_cmp(value).is_none() {
+            return 0.0;
+        }
         self.pt
-            .binary_search_by(|(_, outcome)| outcome.cmp(value))
+            .binary_search_by(|(_, outcome)| {
+                outcome
+                    .partial_cmp(value)
+                    .unwrap_or(std::cmp::Ordering::Less)
+            })
             .map(|index| self.pt[index].0)
             .unwrap_or(0.0)
+    }
+}
+
+impl<T> Distribution<T>
+where
+    T: Copy + std::ops::Mul<f64, Output = T> + std::iter::Sum,
+{
+    pub fn mean(&self) -> T {
+        self.pt
+            .iter()
+            .map(|(probability, outcome)| *outcome * *probability)
+            .sum()
     }
 }
 
@@ -130,7 +169,6 @@ mod tests {
         assert!(Distribution::new(vec![(f64::NAN, 0)]).is_err());
         assert!(Distribution::new(vec![(f64::INFINITY, 0)]).is_err());
         assert!(Distribution::new(vec![(0.0, 0)]).is_err());
-        assert!(Distribution::new(vec![(1.0, 0), (1.0, 0)]).is_err());
         assert!(Distribution::<usize>::uniform(vec![]).is_err());
     }
 
@@ -141,5 +179,21 @@ mod tests {
         assert_eq!(dist.len(), 1);
         assert_eq!(dist.probability_of(&'a'), 1.0);
         assert_eq!(dist.probability_of(&'b'), 0.0);
+    }
+
+    #[test]
+    fn duplicate_outcomes_are_merged() {
+        let dist = Distribution::new(vec![(1.0, 'b'), (1.0, 'a'), (2.0, 'b')]).unwrap();
+
+        assert_eq!(dist.len(), 2);
+        assert_eq!(dist.probability_of(&'a'), 0.25);
+        assert_eq!(dist.probability_of(&'b'), 0.75);
+    }
+
+    #[test]
+    fn numeric_distribution_has_a_mean() {
+        let dist = Distribution::new(vec![(0.25, 2.0), (0.75, 6.0)]).unwrap();
+
+        assert_eq!(dist.mean(), 5.0);
     }
 }

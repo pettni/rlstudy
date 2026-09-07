@@ -156,7 +156,7 @@ fn improve_policy(model: &TabularModel, v_s: &Array1<f64>, gamma: f64) -> Tabula
 
     // transition tensor P(s,a,s') and reward matrix R(s,a).
     let p_sas = transition_tensor(model);
-    let r_sa = Array2::from_shape_fn((n_s, n_a), |(s, a)| model.reward(s, a));
+    let r_sa = Array2::from_shape_fn((n_s, n_a), |(s, a)| model.reward(s, a).mean());
 
     // state-action values
     // Q_pi(s,a) = R(s,a) + γ * sum_{s'} P(s,a,s') * v(s')
@@ -209,7 +209,7 @@ fn transition_tensor(model: &TabularModel) -> Array3<f64> {
 fn policy_reward(model: &TabularModel, policy: &TabularPolicy) -> Array1<f64> {
     Array1::from_shape_fn(model.states().len(), |state| {
         (0..model.actions().len())
-            .map(|action| policy.probability(state, action) * model.reward(state, action))
+            .map(|action| policy.probability(state, action) * model.reward(state, action).mean())
             .sum()
     })
 }

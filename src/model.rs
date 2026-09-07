@@ -1,5 +1,4 @@
 use crate::probability;
-use ndarray::Array2;
 
 #[derive(Debug, Clone)]
 pub struct State {
@@ -32,16 +31,16 @@ pub struct TabularModel {
     // p(s'|s,a) for each state-action pair
     transitions: Vec<probability::Distribution<usize>>,
     // r(s,a) for each state-action pair
-    rewards: Array2<f64>,
+    rewards: Vec<probability::Distribution<f64>>,
 }
 
 impl TabularModel {
-    /// Construct a model whose rewards are expected rewards `r(s, a)`.
+    /// Construct a model with reward distributions `p(r | s, a)`.
     pub fn new(
         states: Vec<State>,
         actions: Vec<Action>,
         p_s_sa: Vec<Vec<probability::Distribution<usize>>>,
-        r_sa: Vec<Vec<f64>>,
+        p_r_sa: Vec<Vec<probability::Distribution<f64>>>,
     ) -> Result<Self, String> {
         let num_states = states.len();
         let num_actions = actions.len();
@@ -58,10 +57,10 @@ impl TabularModel {
                 p_s_sa.len()
             ));
         }
-        if r_sa.len() != num_states {
+        if p_r_sa.len() != num_states {
             return Err(format!(
                 "expected {num_states} reward rows, found {}",
-                r_sa.len()
+                p_r_sa.len()
             ));
         }
 
@@ -72,10 +71,10 @@ impl TabularModel {
                     p_s_sa[state].len()
                 ));
             }
-            if r_sa[state].len() != num_actions {
+            if p_r_sa[state].len() != num_actions {
                 return Err(format!(
                     "expected {num_actions} rewards for state {state}, found {}",
-                    r_sa[state].len()
+                    p_r_sa[state].len()
                 ));
             }
 
@@ -91,11 +90,7 @@ impl TabularModel {
         }
 
         let transitions = p_s_sa.into_iter().flatten().collect();
-        let rewards = Array2::from_shape_vec(
-            (num_states, num_actions),
-            r_sa.into_iter().flatten().collect(),
-        )
-        .expect("validated reward shape");
+        let rewards = p_r_sa.into_iter().flatten().collect();
 
         Ok(Self {
             states,
@@ -110,34 +105,38 @@ impl TabularModel {
         states: Vec<State>,
         actions: Vec<Action>,
         transitions: Vec<Vec<probability::Distribution<usize>>>,
-        rewards: Vec<Vec<Vec<f64>>>,
+        rewards: Vec<Vec<Vec<probability::Distribution<f64>>>>,
     ) -> Result<Self, String> {
-        let num_states = states.len();
-        let num_actions = actions.len();
-        if rewards.len() != num_states
-            || rewards.iter().any(|row| row.len() != num_actions)
+        let n_s = states.len();
+        let n_a = actions.len();
+        if rewards.len() != n_s
+            || rewards.iter().any(|row| row.len() != n_a)
             || rewards
                 .iter()
                 .flatten()
-                .any(|next_states| next_states.len() != num_states)
+                .any(|next_states| next_states.len() != n_s)
         {
             return Err("invalid transition reward shape".into());
         }
 
-        let mut model = Self::new(
-            states,
-            actions,
-            transitions,
-            vec![vec![0.0; num_actions]; num_states],
-        )?;
-        model.rewards = Array2::from_shape_fn((num_states, num_actions), |(state, action)| {
-            model
-                .transitions(state, action)
-                .iter()
-                .map(|(probability, next_state)| probability * rewards[state][action][*next_state])
-                .sum()
-        });
-        Ok(model)
+        let mut p_r_sa = Vec::with_capacity(n_s);
+
+        for s in 0..n_s {
+            let mut p_r_a = Vec::with_capacity(n_a);
+            for a in 0..n_a {
+                let mut outcomes: Vec<(f64, f64)> = Vec::new();
+                // p(r|s,a) = \sum_s' p(r|s,a,s') * p(s'|s,a)
+                for (p_sp, sp) in transitions[s][a].iter() {
+                    for (p_r, reward) in rewards[s][a][*sp].iter() {
+                        outcomes.push((p_sp * p_r, *reward));
+                    }
+                }
+                p_r_a.push(probability::Distribution::new(outcomes)?);
+            }
+            p_r_sa.push(p_r_a);
+        }
+
+        Self::new(states, actions, transitions, p_r_sa)
     }
 
     pub fn states(&self) -> &[State] {
@@ -152,8 +151,8 @@ impl TabularModel {
         &self.transitions[state * self.actions.len() + action]
     }
 
-    pub fn reward(&self, state: usize, action: usize) -> f64 {
-        self.rewards[[state, action]]
+    pub fn reward(&self, state: usize, action: usize) -> &probability::Distribution<f64> {
+        &self.rewards[state * self.actions.len() + action]
     }
 }
 
@@ -189,7 +188,13 @@ mod tests {
     #[test]
     fn model_validates_state_row_counts() {
         assert_eq!(
-            TabularModel::new(states(1), actions(1), vec![], vec![vec![0.0]]).unwrap_err(),
+            TabularModel::new(
+                states(1),
+                actions(1),
+                vec![],
+                vec![vec![Distribution::point_mass(0.0)]],
+            )
+            .unwrap_err(),
             "expected 1 transition rows, found 0"
         );
         assert_eq!(
@@ -207,7 +212,13 @@ mod tests {
     #[test]
     fn model_validates_action_row_counts() {
         assert_eq!(
-            TabularModel::new(states(1), actions(1), vec![vec![]], vec![vec![0.0]]).unwrap_err(),
+            TabularModel::new(
+                states(1),
+                actions(1),
+                vec![vec![]],
+                vec![vec![Distribution::point_mass(0.0)]],
+            )
+            .unwrap_err(),
             "expected 1 transitions for state 0, found 0"
         );
         assert_eq!(
@@ -229,7 +240,7 @@ mod tests {
                 states(1),
                 actions(1),
                 vec![vec![Distribution::point_mass(1)]],
-                vec![vec![0.0]],
+                vec![vec![Distribution::point_mass(0.0)]],
             )
             .unwrap_err(),
             "transition for state 0, action 0 targets state 1, but the model has 1 states"
@@ -245,11 +256,22 @@ mod tests {
                 vec![Distribution::new(vec![(0.25, 0), (0.75, 1)]).unwrap()],
                 vec![Distribution::point_mass(1)],
             ],
-            vec![vec![vec![2.0, 6.0]], vec![vec![0.0, 4.0]]],
+            vec![
+                vec![vec![
+                    Distribution::point_mass(2.0),
+                    Distribution::point_mass(6.0),
+                ]],
+                vec![vec![
+                    Distribution::point_mass(0.0),
+                    Distribution::point_mass(4.0),
+                ]],
+            ],
         )
         .unwrap();
 
-        assert_eq!(model.reward(0, 0), 5.0);
-        assert_eq!(model.reward(1, 0), 4.0);
+        assert_eq!(model.reward(0, 0).mean(), 5.0);
+        assert_eq!(model.reward(0, 0).probability_of(&2.0), 0.25);
+        assert_eq!(model.reward(0, 0).probability_of(&6.0), 0.75);
+        assert_eq!(model.reward(1, 0).mean(), 4.0);
     }
 }

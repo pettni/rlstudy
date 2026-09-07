@@ -33,14 +33,14 @@ pub fn grid_world(n: usize) -> Result<TabularModel, String> {
     ];
 
     let mut s_sa: Vec<Vec<Distribution<usize>>> = Vec::with_capacity(num_states);
-    let mut r_sa: Vec<Vec<f64>> = Vec::with_capacity(num_states);
+    let mut r_sa: Vec<Vec<Distribution<f64>>> = Vec::with_capacity(num_states);
 
     for s in 0..num_states {
         let row = s / n;
         let col = s % n;
 
         let mut s_a: Vec<Distribution<usize>> = Vec::with_capacity(actions.len());
-        let mut r_a: Vec<f64> = Vec::with_capacity(actions.len());
+        let mut r_a: Vec<Distribution<f64>> = Vec::with_capacity(actions.len());
 
         for a in 0..actions.len() {
             let next = match a {
@@ -59,7 +59,7 @@ pub fn grid_world(n: usize) -> Result<TabularModel, String> {
             };
 
             s_a.push(Distribution::new(vec![(1.0, next)])?);
-            r_a.push(reward);
+            r_a.push(Distribution::point_mass(reward));
         }
 
         s_sa.push(s_a);
@@ -83,6 +83,6 @@ mod tests {
 
         let next_state: usize = m.transitions(0, 1).iter().next().unwrap().1;
         assert_eq!(next_state, 1);
-        assert_eq!(m.reward(0, 1), 0.0);
+        assert_eq!(m.reward(0, 1).mean(), 0.0);
     }
 }
