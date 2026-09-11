@@ -93,7 +93,20 @@ impl TabularPolicy {
 
     pub fn from_q(q_sa: &Array2<f64>, objective: PolicyObjective) -> Result<Self, String> {
         let n_a = q_sa.ncols();
-        let greedy_actions = q_to_actions(q_sa);
+        let greedy_actions = q_sa
+            .axis_iter(Axis(0))
+            .map(|row| {
+                let mut best_a = 0;
+                let mut best_q = row[0];
+                for a in 1..n_a {
+                    if row[a] > best_q {
+                        best_q = row[a];
+                        best_a = a;
+                    }
+                }
+                best_a
+            })
+            .collect();
         Self::from_actions(n_a, greedy_actions, objective)
     }
 
@@ -168,23 +181,6 @@ impl Policy for TabularPolicy {
         }
         self.num_actions() - 1
     }
-}
-
-fn q_to_actions(q_sa: &Array2<f64>) -> Vec<usize> {
-    let n_a = q_sa.ncols();
-    q_sa.axis_iter(Axis(0))
-        .map(|row| {
-            let mut best_a = 0;
-            let mut best_q = row[0];
-            for a in 1..n_a {
-                if row[a] > best_q {
-                    best_q = row[a];
-                    best_a = a;
-                }
-            }
-            best_a
-        })
-        .collect()
 }
 
 #[cfg(test)]

@@ -1,9 +1,9 @@
 use rand::{SeedableRng, rngs::StdRng};
 use rlstudy::algorithms::{
-    ModelBasedSolver, ModelFreeSolver, MonteCarlo, Sarsa, SolveResult, StoppingCriterion,
+    ModelBasedSolver, ModelFreeSolver, MonteCarlo, SolveResult, StoppingCriterion, TD,
     TerminationReason, TruncatedPolicyIteration,
 };
-use rlstudy::environment::TabularEnvironment;
+use rlstudy::environment::{BlackBox, TabularEnvironment};
 use rlstudy::environments::grid_world;
 
 fn preferred_action(result: &SolveResult, state: usize) -> usize {
@@ -134,7 +134,7 @@ fn sarsa_solves_grid_world() {
     let model = grid_world(3).unwrap();
     let mut environment = TabularEnvironment::new(&model).unwrap();
     let mut rng = StdRng::seed_from_u64(0);
-    let result = Sarsa::new(10_000, 30, 0.1, 0.1)
+    let result = TD::new(10_000, 30, 0.1, 0.1)
         .unwrap()
         .solve(&mut environment, 0.5, &mut rng)
         .unwrap();
@@ -149,7 +149,7 @@ fn expected_sarsa_solves_grid_world() {
     let model = grid_world(3).unwrap();
     let mut environment = TabularEnvironment::new(&model).unwrap();
     let mut rng = StdRng::seed_from_u64(0);
-    let result = Sarsa::expected(10_000, 30, 0.1, 0.1)
+    let result = TD::expected(10_000, 30, 0.1, 0.1)
         .unwrap()
         .solve(&mut environment, 0.5, &mut rng)
         .unwrap();
@@ -157,6 +157,39 @@ fn expected_sarsa_solves_grid_world() {
     assert_solves_grid_world("expected-sarsa", &result);
     assert_eq!(result.iterations, 10_000);
     assert_eq!(result.termination, TerminationReason::IterationLimit);
+}
+
+#[test]
+fn q_learning_solves_grid_world() {
+    let model = grid_world(3).unwrap();
+    let mut environment = TabularEnvironment::new(&model).unwrap();
+    let mut rng = StdRng::seed_from_u64(0);
+    let result = TD::q_learning(10_000, 30, 0.1, 0.1)
+        .unwrap()
+        .solve(&mut environment, 0.5, &mut rng)
+        .unwrap();
+
+    assert_solves_grid_world("q-learning", &result);
+    assert_eq!(result.iterations, 10_000);
+    assert_eq!(result.termination, TerminationReason::IterationLimit);
+}
+
+#[test]
+fn q_learning_uses_negative_next_state_values() {
+    let mut environment = BlackBox::new(1, 2, 0, |_state, action| {
+        (0, if action == 0 { -1.0 } else { -2.0 })
+    });
+    let mut rng = StdRng::seed_from_u64(0);
+    let result = TD::q_learning(10_000, 1, 0.1, 0.1)
+        .unwrap()
+        .solve(&mut environment, 0.5, &mut rng)
+        .unwrap();
+
+    assert!(
+        result.value[0] < -1.5,
+        "Q-learning must not clamp a negative next-state value to zero"
+    );
+    assert_eq!(result.policy.probability(0, 0), 1.0);
 }
 
 #[test]

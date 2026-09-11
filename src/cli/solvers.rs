@@ -1,6 +1,6 @@
 use clap::{Parser, Subcommand};
 use rlstudy::algorithms::{
-    ModelFreeSolver, MonteCarlo, Sarsa, StoppingCriterion, TruncatedPolicyIteration,
+    ModelFreeSolver, MonteCarlo, StoppingCriterion, TD, TruncatedPolicyIteration,
 };
 
 #[derive(Subcommand, Clone)]
@@ -9,7 +9,7 @@ pub(super) enum Solver {
     PI(StoppingCriterionArgs),
     TPI(TpiArgs),
     MC(MonteCarloArgs),
-    Sarsa(SarsaArgs),
+    TD(TDArgs),
 }
 
 impl Solver {
@@ -19,8 +19,9 @@ impl Solver {
             Self::PI(_) => "policy-iteration",
             Self::TPI(_) => "truncated-policy-iteration",
             Self::MC(_) => "monte-carlo",
-            Self::Sarsa(args) if args.expected => "expected-sarsa",
-            Self::Sarsa(_) => "sarsa",
+            Self::TD(args) if args.q_learning => "q-learning",
+            Self::TD(args) if args.expected => "expected-sarsa",
+            Self::TD(_) => "sarsa",
         }
     }
 }
@@ -56,7 +57,7 @@ pub(super) struct MonteCarloArgs {
 }
 
 #[derive(Parser, Clone)]
-pub(super) struct SarsaArgs {
+pub(super) struct TDArgs {
     #[arg(long)]
     episodes: u64,
     #[arg(long)]
@@ -65,8 +66,10 @@ pub(super) struct SarsaArgs {
     epsilon: f64,
     #[arg(long)]
     alpha: f64,
-    #[arg(long)]
+    #[arg(long, conflicts_with = "q_learning")]
     expected: bool,
+    #[arg(long, conflicts_with = "expected")]
+    q_learning: bool,
 }
 
 pub(super) enum SelectedSolver {
@@ -93,11 +96,13 @@ pub(super) fn build_solver(solver: &Solver) -> Result<SelectedSolver, Box<dyn st
             args.episode_length,
             args.epsilon,
         )))),
-        Solver::Sarsa(args) => {
-            let solver = if args.expected {
-                Sarsa::expected(args.episodes, args.episode_length, args.epsilon, args.alpha)?
+        Solver::TD(args) => {
+            let solver = if args.q_learning {
+                TD::q_learning(args.episodes, args.episode_length, args.epsilon, args.alpha)?
+            } else if args.expected {
+                TD::expected(args.episodes, args.episode_length, args.epsilon, args.alpha)?
             } else {
-                Sarsa::new(args.episodes, args.episode_length, args.epsilon, args.alpha)?
+                TD::new(args.episodes, args.episode_length, args.epsilon, args.alpha)?
             };
             Ok(SelectedSolver::ModelFree(Box::new(solver)))
         }

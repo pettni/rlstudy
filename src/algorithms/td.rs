@@ -1,17 +1,31 @@
 use crate::algorithms::{ModelFreeSolver, SolveResult, TerminationReason};
 use crate::environment::{Environment, Space};
 use crate::policy::{Policy, PolicyObjective, TabularPolicy};
-use ndarray::Array2;
+use ndarray::{Array2, ArrayView1};
+
+/// TD-family of model-free control algorithm.
+///
+/// Given (s_t, a_t, r_{t+1}, s_{t+1}, a_{t+1}) update the q estimate as
+///
+///  q(s_t,a_t) = q(s_t,a_t) - alpha * (q(s_t, a_t) - td_target),
+///
+/// where td_target =
+///     r_{t+1} + gamma * q(s_{t+1}, a_{t+1})               [Sarsa]
+///     r_{t+1} + gamma * E_pi q(s_{t+1}, pi(s_{t+1}))      [Expected Sarsa]
+///     r_{t+1} + gamma * max_a q(s_{t+1}, a)               [Q-learning]
+///
 
 #[derive(Clone, Copy)]
-pub enum SarsaVariant {
+pub enum TDVariant {
     /// Basic variant
     Sarsa,
     /// TD target from expected future state
     ExpectedSarsa,
+    /// TD target from the greedy next-state action
+    QLearning,
 }
 
-pub struct Sarsa {
+pub struct TD {
     // number of episodes
     episodes: u64,
     // episode length
@@ -21,23 +35,17 @@ pub struct Sarsa {
     // learning rate
     alpha: f64,
     // algorithm type
-    variant: SarsaVariant,
+    variant: TDVariant,
 }
 
-impl Sarsa {
+impl TD {
     pub fn new(
         episodes: u64,
         episode_length: u64,
         epsilon: f64,
         alpha: f64,
     ) -> Result<Self, String> {
-        Self::with_variant(
-            episodes,
-            episode_length,
-            epsilon,
-            alpha,
-            SarsaVariant::Sarsa,
-        )
+        Self::with_variant(episodes, episode_length, epsilon, alpha, TDVariant::Sarsa)
     }
 
     pub fn expected(
@@ -51,7 +59,22 @@ impl Sarsa {
             episode_length,
             epsilon,
             alpha,
-            SarsaVariant::ExpectedSarsa,
+            TDVariant::ExpectedSarsa,
+        )
+    }
+
+    pub fn q_learning(
+        episodes: u64,
+        episode_length: u64,
+        epsilon: f64,
+        alpha: f64,
+    ) -> Result<Self, String> {
+        Self::with_variant(
+            episodes,
+            episode_length,
+            epsilon,
+            alpha,
+            TDVariant::QLearning,
         )
     }
 
@@ -60,7 +83,7 @@ impl Sarsa {
         episode_length: u64,
         epsilon: f64,
         alpha: f64,
-        variant: SarsaVariant,
+        variant: TDVariant,
     ) -> Result<Self, String> {
         if episodes == 0 {
             return Err("episodes must be positive".into());
@@ -84,7 +107,7 @@ impl Sarsa {
     }
 }
 
-impl ModelFreeSolver for Sarsa {
+impl ModelFreeSolver for TD {
     fn solve(
         &self,
         env: &mut dyn Environment<State = usize, Action = usize>,
@@ -95,10 +118,10 @@ impl ModelFreeSolver for Sarsa {
             return Err("gamma must be finite and in [0, 1)".into());
         }
         let Space::Discrete { size: n_s } = env.state_space() else {
-            return Err("Sarsa requires a discrete state space".into());
+            return Err("TD requires a discrete state space".into());
         };
         let Space::Discrete { size: n_a } = env.action_space() else {
-            return Err("Sarsa requires a discrete action space".into());
+            return Err("TD requires a discrete action space".into());
         };
 
         let mut q_sa = Array2::<f64>::zeros((n_s, n_a));
@@ -117,11 +140,12 @@ impl ModelFreeSolver for Sarsa {
 
                 // value update
                 let q_next = match self.variant {
-                    SarsaVariant::Sarsa => q_sa[[stp, atp]],
-                    SarsaVariant::ExpectedSarsa => {
+                    TDVariant::Sarsa => q_sa[[stp, atp]],
+                    TDVariant::ExpectedSarsa => {
                         let p_a = pi.state_probabilities(stp);
                         q_sa.row(stp).dot(&p_a)
                     }
+                    TDVariant::QLearning => max_q(q_sa.row(stp)),
                 };
                 let td_target = rt + gamma * q_next;
                 q_sa[[st, at]] -= self.alpha * (q_sa[[st, at]] - td_target);
@@ -138,12 +162,22 @@ impl ModelFreeSolver for Sarsa {
             }
         }
 
-        let value = (0..n_s)
-            .map(|s| (0..n_a).map(|a| pi.probability(s, a) * q_sa[[s, a]]).sum())
-            .collect();
+        let (policy, value) = match self.variant {
+            TDVariant::QLearning => {
+                let value = (0..n_s).map(|s| max_q(q_sa.row(s))).collect();
+                let policy = TabularPolicy::from_q(&q_sa, PolicyObjective::Deterministic)?;
+                (policy, value)
+            }
+            TDVariant::Sarsa | TDVariant::ExpectedSarsa => {
+                let value = (0..n_s)
+                    .map(|s| (0..n_a).map(|a| pi.probability(s, a) * q_sa[[s, a]]).sum())
+                    .collect();
+                (pi, value)
+            }
+        };
 
         Ok(SolveResult {
-            policy: pi,
+            policy,
             value,
             iterations: self
                 .episodes
@@ -154,18 +188,26 @@ impl ModelFreeSolver for Sarsa {
     }
 }
 
+fn max_q(q_a: ArrayView1<'_, f64>) -> f64 {
+    q_a.iter()
+        .copied()
+        .reduce(f64::max)
+        .expect("action space has actions")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn configuration_is_validated() {
-        assert!(Sarsa::new(0, 10, 0.1, 0.1).is_err());
-        assert!(Sarsa::new(10, 0, 0.1, 0.1).is_err());
-        assert!(Sarsa::new(10, 10, -0.1, 0.1).is_err());
-        assert!(Sarsa::new(10, 10, 0.1, 0.0).is_err());
-        assert!(Sarsa::new(10, 10, 0.1, 1.1).is_err());
-        assert!(Sarsa::new(10, 10, 0.1, 0.1).is_ok());
-        assert!(Sarsa::expected(10, 10, 0.1, 0.1).is_ok());
+        assert!(TD::new(0, 10, 0.1, 0.1).is_err());
+        assert!(TD::new(10, 0, 0.1, 0.1).is_err());
+        assert!(TD::new(10, 10, -0.1, 0.1).is_err());
+        assert!(TD::new(10, 10, 0.1, 0.0).is_err());
+        assert!(TD::new(10, 10, 0.1, 1.1).is_err());
+        assert!(TD::new(10, 10, 0.1, 0.1).is_ok());
+        assert!(TD::expected(10, 10, 0.1, 0.1).is_ok());
+        assert!(TD::q_learning(10, 10, 0.1, 0.1).is_ok());
     }
 }

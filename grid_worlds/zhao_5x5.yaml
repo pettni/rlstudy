@@ -12,7 +12,7 @@ forbidden_states:
   - [4, 1]
 goal_states:
   - [3, 2]
-r_boundary: -10
+r_boundary: -1
 r_forbidden: -10
-r_target: 0
-r_other: -1
+r_target: 1
+r_other: 0

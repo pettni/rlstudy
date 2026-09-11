@@ -6,12 +6,13 @@ Solve a YAML grid world:
 cargo run --quiet -- solve --gamma 0.9 --system grid_worlds/zhao_5x5.yaml vi
 ```
 
-Solvers are `vi`, `pi`, `tpi`, `mc`, and `sarsa`. Use `--help` for their
+Solvers are `vi`, `pi`, `tpi`, `mc`, and `td`. Use `--help` for their
 options.
 
 ```bash
-cargo run --quiet -- solve --system grid_worlds/zhao_3x3.yaml sarsa --episodes 10000 --episode-length 30 --epsilon 0.1 --alpha 0.1
-cargo run --quiet -- solve --system grid_worlds/zhao_3x3.yaml sarsa --episodes 10000 --episode-length 30 --epsilon 0.1 --alpha 0.1 --expected
+cargo run --quiet -- solve --system grid_worlds/zhao_3x3.yaml td --episodes 10000 --episode-length 30 --epsilon 0.1 --alpha 0.1
+cargo run --quiet -- solve --system grid_worlds/zhao_3x3.yaml td --episodes 10000 --episode-length 30 --epsilon 0.1 --alpha 0.1 --expected
+cargo run --quiet -- solve --system grid_worlds/zhao_3x3.yaml td --episodes 10000 --episode-length 30 --epsilon 0.1 --alpha 0.1 --q-learning
 ```
 
 ## Render
