@@ -1,0 +1,14 @@
+# 3x3 grid world from Section 1.1 in Zhao
+side: 3
+initial_distribution:
+  type: fixed
+  state: [0, 0]
+forbidden_states:
+  - [1, 2]
+  - [2, 0]
+goal_states:
+  - [2, 2]
+r_boundary: -1
+r_forbidden: -1
+r_target: 1
+r_other: 0

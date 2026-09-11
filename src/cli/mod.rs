@@ -28,6 +28,7 @@ enum Commands {
 
 #[derive(Parser)]
 struct SolveArgs {
+    /// Built-in system name or path to a grid-world YAML file.
     #[arg(short, long, default_value = "gridworld")]
     system: String,
 
@@ -107,7 +108,7 @@ fn run_solver(
         SelectedSolver::ModelFree(solver) => {
             let result = match system {
                 SelectedSystem::Model(model) => {
-                    solver.solve(&mut TabularEnvironment::new(model, 0)?, gamma, rng)
+                    solver.solve(&mut TabularEnvironment::new(model)?, gamma, rng)
                 }
                 SelectedSystem::BlackBox(environment) => {
                     solver.solve(environment.as_mut(), gamma, rng)
@@ -131,7 +132,7 @@ fn print_result(system: &str, solver: &Solver, result: &SolveResult, gamma: f64)
     println!("iterations={}", result.iterations);
     println!("termination={:?}", result.termination);
     println!("policy:");
-    for s in 0..result.policy.num_states().min(10) {
+    for s in 0..result.policy.num_states() {
         let action = (0..result.policy.num_actions())
             .max_by(|&a, &b| {
                 result

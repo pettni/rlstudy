@@ -24,6 +24,8 @@ impl Action {
 
 #[derive(Debug, Clone)]
 pub struct TabularModel {
+    // initial state distribution
+    initial_distribution: probability::Distribution<usize>,
     // all states
     states: Vec<State>,
     // all actions
@@ -35,6 +37,7 @@ pub struct TabularModel {
 impl TabularModel {
     /// Construct a model with joint transition distributions `p(s', r | s, a)`.
     pub fn new(
+        initial_distribution: probability::Distribution<usize>,
         states: Vec<State>,
         actions: Vec<Action>,
         p_sr_sa: Vec<Vec<probability::Distribution<(usize, f64)>>>,
@@ -77,6 +80,7 @@ impl TabularModel {
         let outcomes = p_sr_sa.into_iter().flatten().collect();
 
         Ok(Self {
+            initial_distribution,
             states,
             actions,
             outcomes,
@@ -85,6 +89,7 @@ impl TabularModel {
 
     /// Construct a joint model from transition and reward functions.
     pub fn from_functions<F, G>(
+        initial_distribution: probability::Distribution<usize>,
         states: Vec<State>,
         actions: Vec<Action>,
         transition_distribution: F,
@@ -118,7 +123,11 @@ impl TabularModel {
             p_sr_sa.push(p_sr_a);
         }
 
-        Self::new(states, actions, p_sr_sa)
+        Self::new(initial_distribution, states, actions, p_sr_sa)
+    }
+
+    pub fn initial_distribution(&self) -> &probability::Distribution<usize> {
+        &self.initial_distribution
     }
 
     pub fn states(&self) -> &[State] {
@@ -158,11 +167,23 @@ mod tests {
     #[test]
     fn model_requires_states_and_actions() {
         assert_eq!(
-            TabularModel::new(vec![], actions(1), vec![]).unwrap_err(),
+            TabularModel::new(
+                probability::Distribution::point_mass(0),
+                vec![],
+                actions(1),
+                vec![]
+            )
+            .unwrap_err(),
             "model must have at least one state"
         );
         assert_eq!(
-            TabularModel::new(states(1), vec![], vec![vec![]]).unwrap_err(),
+            TabularModel::new(
+                probability::Distribution::point_mass(0),
+                states(1),
+                vec![],
+                vec![vec![]]
+            )
+            .unwrap_err(),
             "model must have at least one action"
         );
     }
@@ -170,7 +191,13 @@ mod tests {
     #[test]
     fn model_validates_state_row_counts() {
         assert_eq!(
-            TabularModel::new(states(1), actions(1), vec![]).unwrap_err(),
+            TabularModel::new(
+                probability::Distribution::point_mass(0),
+                states(1),
+                actions(1),
+                vec![]
+            )
+            .unwrap_err(),
             "expected 1 outcome rows, found 0"
         );
     }
@@ -178,7 +205,13 @@ mod tests {
     #[test]
     fn model_validates_action_row_counts() {
         assert_eq!(
-            TabularModel::new(states(1), actions(1), vec![vec![]]).unwrap_err(),
+            TabularModel::new(
+                probability::Distribution::point_mass(0),
+                states(1),
+                actions(1),
+                vec![vec![]]
+            )
+            .unwrap_err(),
             "expected 1 outcomes for state 0, found 0"
         );
     }
@@ -187,6 +220,7 @@ mod tests {
     fn model_rejects_invalid_transitions() {
         assert_eq!(
             TabularModel::new(
+                probability::Distribution::point_mass(0),
                 states(1),
                 actions(1),
                 vec![vec![Distribution::point_mass((1, 0.0))]],

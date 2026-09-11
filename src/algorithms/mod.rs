@@ -4,9 +4,11 @@ use crate::policy::TabularPolicy;
 
 pub mod monte_carlo;
 pub mod policy_iteration;
+pub mod sarsa;
 
 pub use monte_carlo::MonteCarlo;
 pub use policy_iteration::{StoppingCriterion, TruncatedPolicyIteration};
+pub use sarsa::Sarsa;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct SolveResult {

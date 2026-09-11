@@ -1,6 +1,6 @@
 use clap::{Parser, Subcommand};
 use rlstudy::algorithms::{
-    ModelFreeSolver, MonteCarlo, StoppingCriterion, TruncatedPolicyIteration,
+    ModelFreeSolver, MonteCarlo, Sarsa, StoppingCriterion, TruncatedPolicyIteration,
 };
 
 #[derive(Subcommand, Clone)]
@@ -9,6 +9,7 @@ pub(super) enum Solver {
     PI(StoppingCriterionArgs),
     TPI(TpiArgs),
     MC(MonteCarloArgs),
+    Sarsa(SarsaArgs),
 }
 
 impl Solver {
@@ -18,6 +19,8 @@ impl Solver {
             Self::PI(_) => "policy-iteration",
             Self::TPI(_) => "truncated-policy-iteration",
             Self::MC(_) => "monte-carlo",
+            Self::Sarsa(args) if args.expected => "expected-sarsa",
+            Self::Sarsa(_) => "sarsa",
         }
     }
 }
@@ -52,6 +55,20 @@ pub(super) struct MonteCarloArgs {
     epsilon: f64,
 }
 
+#[derive(Parser, Clone)]
+pub(super) struct SarsaArgs {
+    #[arg(long)]
+    episodes: u64,
+    #[arg(long)]
+    episode_length: u64,
+    #[arg(long)]
+    epsilon: f64,
+    #[arg(long)]
+    alpha: f64,
+    #[arg(long)]
+    expected: bool,
+}
+
 pub(super) enum SelectedSolver {
     ModelBased(TruncatedPolicyIteration),
     ModelFree(Box<dyn ModelFreeSolver>),
@@ -76,6 +93,14 @@ pub(super) fn build_solver(solver: &Solver) -> Result<SelectedSolver, Box<dyn st
             args.episode_length,
             args.epsilon,
         )))),
+        Solver::Sarsa(args) => {
+            let solver = if args.expected {
+                Sarsa::expected(args.episodes, args.episode_length, args.epsilon, args.alpha)?
+            } else {
+                Sarsa::new(args.episodes, args.episode_length, args.epsilon, args.alpha)?
+            };
+            Ok(SelectedSolver::ModelFree(Box::new(solver)))
+        }
     }
 }
 

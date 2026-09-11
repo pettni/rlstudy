@@ -1,6 +1,6 @@
 use rand::{SeedableRng, rngs::StdRng};
 use rlstudy::algorithms::{
-    ModelBasedSolver, ModelFreeSolver, MonteCarlo, SolveResult, StoppingCriterion,
+    ModelBasedSolver, ModelFreeSolver, MonteCarlo, Sarsa, SolveResult, StoppingCriterion,
     TerminationReason, TruncatedPolicyIteration,
 };
 use rlstudy::environment::TabularEnvironment;
@@ -118,13 +118,43 @@ fn truncated_policy_iteration_solves_grid_world() {
 #[test]
 fn monte_carlo_solves_grid_world() {
     let model = grid_world(3).unwrap();
-    let mut environment = TabularEnvironment::new(&model, 0).unwrap();
+    let mut environment = TabularEnvironment::new(&model).unwrap();
     let mut rng = StdRng::seed_from_u64(0);
     let result = MonteCarlo::new(10_000, 30, 0.1)
         .solve(&mut environment, 0.5, &mut rng)
         .unwrap();
 
     assert_solves_grid_world("monte-carlo", &result);
+    assert_eq!(result.iterations, 10_000);
+    assert_eq!(result.termination, TerminationReason::IterationLimit);
+}
+
+#[test]
+fn sarsa_solves_grid_world() {
+    let model = grid_world(3).unwrap();
+    let mut environment = TabularEnvironment::new(&model).unwrap();
+    let mut rng = StdRng::seed_from_u64(0);
+    let result = Sarsa::new(10_000, 30, 0.1, 0.1)
+        .unwrap()
+        .solve(&mut environment, 0.5, &mut rng)
+        .unwrap();
+
+    assert_solves_grid_world("sarsa", &result);
+    assert_eq!(result.iterations, 10_000);
+    assert_eq!(result.termination, TerminationReason::IterationLimit);
+}
+
+#[test]
+fn expected_sarsa_solves_grid_world() {
+    let model = grid_world(3).unwrap();
+    let mut environment = TabularEnvironment::new(&model).unwrap();
+    let mut rng = StdRng::seed_from_u64(0);
+    let result = Sarsa::expected(10_000, 30, 0.1, 0.1)
+        .unwrap()
+        .solve(&mut environment, 0.5, &mut rng)
+        .unwrap();
+
+    assert_solves_grid_world("expected-sarsa", &result);
     assert_eq!(result.iterations, 10_000);
     assert_eq!(result.termination, TerminationReason::IterationLimit);
 }

@@ -11,3 +11,5 @@ ndarray = "0.17.2"
 num-traits = "0.2"
 rand = "0.10.2"
 rand_distr = "0.6.0"
+serde = { version = "1.0", features = ["derive"] }
+yaml_serde = "0.10"

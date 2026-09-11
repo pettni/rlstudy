@@ -1,7 +1,7 @@
 use crate::algorithms::{ModelFreeSolver, SolveResult, TerminationReason};
 use crate::environment::{Environment, Space};
-use crate::policy::{Policy, TabularPolicy};
-use ndarray::{Array2, Axis, Zip};
+use crate::policy::{Policy, PolicyObjective, TabularPolicy};
+use ndarray::{Array2, Zip};
 
 pub struct MonteCarlo {
     // number of episodes
@@ -82,7 +82,7 @@ impl ModelFreeSolver for MonteCarlo {
                 });
 
             // policy improvement
-            pi = create_policy(&q_sa, self.epsilon);
+            pi = TabularPolicy::from_q(&q_sa, PolicyObjective::SoftDeterministic(self.epsilon))?;
         }
 
         // value under the final epsilon-soft policy
@@ -100,25 +100,4 @@ impl ModelFreeSolver for MonteCarlo {
             termination: TerminationReason::IterationLimit,
         })
     }
-}
-
-// create eps-greedy policy from estimated state-action values
-fn create_policy(q_sa: &Array2<f64>, epsilon: f64) -> TabularPolicy {
-    let n_a = q_sa.ncols();
-    let actions: Vec<usize> = q_sa
-        .axis_iter(Axis(0))
-        .map(|row| {
-            let mut best_a = 0;
-            let mut best_q = row[0];
-            for a in 1..n_a {
-                if row[a] > best_q {
-                    best_q = row[a];
-                    best_a = a;
-                }
-            }
-            best_a
-        })
-        .collect();
-
-    TabularPolicy::soft_deterministic(n_a, actions, epsilon).unwrap()
 }

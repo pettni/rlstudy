@@ -3,7 +3,7 @@ use crate::algorithms::{
 };
 use crate::model::TabularModel;
 use crate::policy::TabularPolicy;
-use ndarray::{Array1, Array2, Array3, Axis};
+use ndarray::{Array1, Array2, Array3};
 use num_traits::abs;
 
 pub struct StoppingCriterion {
@@ -207,22 +207,8 @@ fn improve_policy(model: &TabularModel, v_s: &Array1<f64>, gamma: f64) -> Tabula
     });
 
     // new policy is row-wise argmax over Q(s,a)
-    let actions: Vec<usize> = q_sa
-        .axis_iter(Axis(0))
-        .map(|row| {
-            let mut best_a = 0;
-            let mut best_q = row[0];
-            for a in 1..n_a {
-                if row[a] > best_q {
-                    best_q = row[a];
-                    best_a = a;
-                }
-            }
-            best_a
-        })
-        .collect();
-
-    TabularPolicy::deterministic(n_a, actions).expect("model has actions")
+    TabularPolicy::from_q(&q_sa, crate::policy::PolicyObjective::Deterministic)
+        .expect("model has actions")
 }
 
 // Compute P_pi(s,a) for a policy

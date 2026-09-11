@@ -26,20 +26,12 @@ pub trait Environment {
 
 pub struct TabularEnvironment<'a> {
     model: &'a TabularModel,
-    initial_state: usize,
-    state: usize,
+    state: Option<usize>,
 }
 
 impl<'a> TabularEnvironment<'a> {
-    pub fn new(model: &'a TabularModel, initial_state: usize) -> Result<Self, String> {
-        if initial_state >= model.states().len() {
-            return Err("initial state is out of bounds".into());
-        }
-        Ok(Self {
-            model,
-            initial_state,
-            state: initial_state,
-        })
+    pub fn new(model: &'a TabularModel) -> Result<Self, String> {
+        Ok(Self { model, state: None })
     }
 }
 
@@ -59,14 +51,17 @@ impl Environment for TabularEnvironment<'_> {
         }
     }
 
-    fn reset(&mut self, _rng: &mut dyn rand::Rng) -> usize {
-        self.state = self.initial_state;
-        self.state
+    fn reset(&mut self, rng: &mut dyn rand::Rng) -> usize {
+        self.state = Some(*self.model.initial_distribution().sample(rng));
+        self.state.unwrap()
     }
 
     fn step(&mut self, action: usize, rng: &mut dyn rand::Rng) -> (usize, f64) {
-        let &(next_state, reward) = self.model.outcomes(self.state, action).sample(rng);
-        self.state = next_state;
+        let &(next_state, reward) = match self.state {
+            Some(state) => self.model.outcomes(state, action).sample(rng),
+            None => panic!("Call reset() before step()"),
+        };
+        self.state = Some(next_state);
         (next_state, reward)
     }
 }
@@ -136,14 +131,13 @@ mod tests {
     #[test]
     fn tabular_model_acts_as_environment() {
         let model = grid_world(3).unwrap();
-        let mut environment = TabularEnvironment::new(&model, 0).unwrap();
+        let mut environment = TabularEnvironment::new(&model).unwrap();
         let mut rng = StdRng::seed_from_u64(0);
 
         assert_eq!(environment.state_space(), Space::Discrete { size: 9 });
         assert_eq!(environment.action_space(), Space::Discrete { size: 5 });
-        assert_eq!(environment.step(1, &mut rng), (1, 0.0));
         assert_eq!(environment.reset(&mut rng), 0);
-        assert!(TabularEnvironment::new(&model, 9).is_err());
+        assert_eq!(environment.step(1, &mut rng), (1, 0.0));
     }
 
     #[test]
