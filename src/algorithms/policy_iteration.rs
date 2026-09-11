@@ -3,8 +3,7 @@ use crate::algorithms::{
 };
 use crate::model::TabularModel;
 use crate::policy::TabularPolicy;
-use ndarray::{Array1, Array2, Array3, Axis, Ix2};
-use ndarray_einsum::einsum;
+use ndarray::{Array1, Array2, Array3, Axis};
 use num_traits::abs;
 
 pub struct StoppingCriterion {
@@ -198,7 +197,14 @@ fn improve_policy(model: &TabularModel, v_s: &Array1<f64>, gamma: f64) -> Tabula
 
     // state-action values
     // Q_pi(s,a) = R(s,a) + γ * sum_{s'} P(s,a,s') * v(s')
-    let q_sa = &r_sa + gamma * einsum("sat,t->sa", &[&p_sas.view(), &v_s.view()]).unwrap();
+    let q_sa = Array2::from_shape_fn((n_s, n_a), |(s, a)| {
+        let future_value: f64 = v_s
+            .iter()
+            .enumerate()
+            .map(|(sp, &value)| p_sas[[s, a, sp]] * value)
+            .sum();
+        r_sa[[s, a]] + gamma * future_value
+    });
 
     // new policy is row-wise argmax over Q(s,a)
     let actions: Vec<usize> = q_sa
@@ -229,12 +235,12 @@ fn policy_matrix(policy: &TabularPolicy) -> Array2<f64> {
 
 // Compute P(s, a, s') for a model
 fn transition_tensor(model: &TabularModel) -> Array3<f64> {
-    let num_states = model.states().len();
-    let num_actions = model.actions().len();
-    let mut tensor = Array3::zeros((num_states, num_actions, num_states));
+    let n_s = model.states().len();
+    let n_a = model.actions().len();
+    let mut tensor = Array3::zeros((n_s, n_a, n_s));
 
-    for state in 0..num_states {
-        for action in 0..num_actions {
+    for state in 0..n_s {
+        for action in 0..n_a {
             for (probability, (next_state, _)) in model.outcomes(state, action).iter() {
                 tensor[[state, action, *next_state]] += *probability;
             }
@@ -262,14 +268,14 @@ fn expected_reward(model: &TabularModel, state: usize, action: usize) -> f64 {
 
 // Compute P(s, s') for a model and policy
 fn policy_transition_matrix(model: &TabularModel, policy: &TabularPolicy) -> Array2<f64> {
-    einsum(
-        "sat,sa->st",
-        &[
-            &transition_tensor(model).view(),
-            &policy_matrix(policy).view(),
-        ],
-    )
-    .expect("einsum contraction failed")
-    .into_dimensionality::<Ix2>()
-    .expect("einsum result should be 2D")
+    let n_s = model.states().len();
+    let n_a = model.actions().len();
+
+    let p_sat = transition_tensor(model);
+    let pi_sa = policy_matrix(policy);
+
+    // einsum("sat,st->st", p_sat, pi_st)
+    Array2::from_shape_fn((n_s, n_s), |(s, t)| -> f64 {
+        (0..n_a).map(|a| p_sat[[s, a, t]] * pi_sa[[s, a]]).sum()
+    })
 }

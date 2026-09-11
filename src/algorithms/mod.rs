@@ -2,8 +2,10 @@ use crate::environment::Environment;
 use crate::model::TabularModel;
 use crate::policy::TabularPolicy;
 
+pub mod monte_carlo;
 pub mod policy_iteration;
 
+pub use monte_carlo::MonteCarlo;
 pub use policy_iteration::{StoppingCriterion, TruncatedPolicyIteration};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -40,7 +42,7 @@ pub trait ModelBasedSolver {
 pub trait ModelFreeSolver {
     fn solve(
         &self,
-        environment: &mut dyn Environment<State = usize, Action = usize>,
+        env: &mut dyn Environment<State = usize, Action = usize>,
         gamma: f64,
         rng: &mut dyn rand::Rng,
     ) -> Result<SolveResult, String>;

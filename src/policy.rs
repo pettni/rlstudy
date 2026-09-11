@@ -67,6 +67,29 @@ impl TabularPolicy {
         Self::new(probabilities)
     }
 
+    pub fn soft_deterministic(
+        num_actions: usize,
+        actions: Vec<usize>,
+        epsilon: f64,
+    ) -> Result<Self, String> {
+        if !epsilon.is_finite() || !(0.0..=1.0).contains(&epsilon) {
+            return Err("epsilon must be finite and in [0, 1]".into());
+        }
+        if actions.iter().any(|action| *action >= num_actions) {
+            return Err("policy action is out of bounds".into());
+        }
+        let exploration_probability = epsilon / num_actions as f64;
+        let probabilities = actions
+            .into_iter()
+            .map(|action| {
+                let mut row = vec![exploration_probability; num_actions];
+                row[action] = 1.0 - epsilon + exploration_probability;
+                row
+            })
+            .collect();
+        Self::new(probabilities)
+    }
+
     pub fn num_states(&self) -> usize {
         self.probabilities.nrows()
     }
@@ -146,6 +169,17 @@ mod tests {
         assert_eq!(policy.probability(0, 2), 1.0);
         assert_eq!(policy.probability(1, 0), 1.0);
         assert_eq!(policy.probability(0, 0), 0.0);
+    }
+
+    #[test]
+    fn soft_deterministic_policy_is_epsilon_greedy() {
+        let policy = TabularPolicy::soft_deterministic(3, vec![2], 0.3).unwrap();
+
+        assert!((policy.probability(0, 0) - 0.1).abs() < 1e-12);
+        assert!((policy.probability(0, 1) - 0.1).abs() < 1e-12);
+        assert!((policy.probability(0, 2) - 0.8).abs() < 1e-12);
+        assert!(TabularPolicy::soft_deterministic(3, vec![0], -0.1).is_err());
+        assert!(TabularPolicy::soft_deterministic(3, vec![0], 1.1).is_err());
     }
 
     #[test]

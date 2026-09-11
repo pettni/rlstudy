@@ -1,11 +1,44 @@
+use rand::{SeedableRng, rngs::StdRng};
 use rlstudy::algorithms::{
-    ModelBasedSolver, StoppingCriterion, TerminationReason, TruncatedPolicyIteration,
+    ModelBasedSolver, ModelFreeSolver, MonteCarlo, SolveResult, StoppingCriterion,
+    TerminationReason, TruncatedPolicyIteration,
 };
+use rlstudy::environment::TabularEnvironment;
 use rlstudy::environments::grid_world;
 
-fn solver_solves_grid_world(name: &str, solver: TruncatedPolicyIteration) {
+fn preferred_action(result: &SolveResult, state: usize) -> usize {
+    (0..result.policy.num_actions())
+        .max_by(|&a, &b| {
+            result
+                .policy
+                .probability(state, a)
+                .total_cmp(&result.policy.probability(state, b))
+        })
+        .unwrap()
+}
+
+fn assert_solves_grid_world(name: &str, result: &SolveResult) {
+    assert!(
+        [1, 2].contains(&preferred_action(result, 0)),
+        "{name}: policy should move right or down from state 0",
+    );
+    assert_eq!(
+        preferred_action(result, 1),
+        2,
+        "{name}: policy should move down from state 1",
+    );
+    assert_eq!(
+        preferred_action(result, 2),
+        3,
+        "{name}: policy should move left from state 2",
+    );
+}
+
+fn model_based_solver_solves_grid_world(name: &str, solver: TruncatedPolicyIteration) {
     let model = grid_world(3).unwrap();
     let result = solver.solve(&model, 0.5).unwrap();
+
+    assert_solves_grid_world(name, &result);
 
     // The goal state (bottom-right, index 8) should have the highest value.
     let goal_value = result.value[8];
@@ -53,7 +86,7 @@ fn solver_solves_grid_world(name: &str, solver: TruncatedPolicyIteration) {
 
 #[test]
 fn value_iteration_solves_grid_world() {
-    solver_solves_grid_world(
+    model_based_solver_solves_grid_world(
         "value-iteration",
         TruncatedPolicyIteration::value_iteration(
             StoppingCriterion::convergence(1e-6, 1000).unwrap(),
@@ -63,7 +96,7 @@ fn value_iteration_solves_grid_world() {
 
 #[test]
 fn policy_iteration_solves_grid_world() {
-    solver_solves_grid_world(
+    model_based_solver_solves_grid_world(
         "policy-iteration",
         TruncatedPolicyIteration::policy_iteration(
             StoppingCriterion::convergence(1e-6, 1000).unwrap(),
@@ -73,13 +106,27 @@ fn policy_iteration_solves_grid_world() {
 
 #[test]
 fn truncated_policy_iteration_solves_grid_world() {
-    solver_solves_grid_world(
+    model_based_solver_solves_grid_world(
         "truncated-policy-iteration",
         TruncatedPolicyIteration::new(
             StoppingCriterion::convergence(1e-6, 1000).unwrap(),
             StoppingCriterion::iterations(4).unwrap(),
         ),
     );
+}
+
+#[test]
+fn monte_carlo_solves_grid_world() {
+    let model = grid_world(3).unwrap();
+    let mut environment = TabularEnvironment::new(&model, 0).unwrap();
+    let mut rng = StdRng::seed_from_u64(0);
+    let result = MonteCarlo::new(10_000, 30, 0.1)
+        .solve(&mut environment, 0.5, &mut rng)
+        .unwrap();
+
+    assert_solves_grid_world("monte-carlo", &result);
+    assert_eq!(result.iterations, 10_000);
+    assert_eq!(result.termination, TerminationReason::IterationLimit);
 }
 
 #[test]

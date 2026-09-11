@@ -1,5 +1,6 @@
 //! Common interface for environments used by reinforcement-learning algorithms.
 
+use crate::model::TabularModel;
 use ndarray::Array1;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -21,6 +22,53 @@ pub trait Environment {
 
     /// Take `action` and return the next state and reward.
     fn step(&mut self, action: Self::Action, rng: &mut dyn rand::Rng) -> (Self::State, f64);
+}
+
+pub struct TabularEnvironment<'a> {
+    model: &'a TabularModel,
+    initial_state: usize,
+    state: usize,
+}
+
+impl<'a> TabularEnvironment<'a> {
+    pub fn new(model: &'a TabularModel, initial_state: usize) -> Result<Self, String> {
+        if initial_state >= model.states().len() {
+            return Err("initial state is out of bounds".into());
+        }
+        Ok(Self {
+            model,
+            initial_state,
+            state: initial_state,
+        })
+    }
+}
+
+impl Environment for TabularEnvironment<'_> {
+    type State = usize;
+    type Action = usize;
+
+    fn state_space(&self) -> Space {
+        Space::Discrete {
+            size: self.model.states().len(),
+        }
+    }
+
+    fn action_space(&self) -> Space {
+        Space::Discrete {
+            size: self.model.actions().len(),
+        }
+    }
+
+    fn reset(&mut self, _rng: &mut dyn rand::Rng) -> usize {
+        self.state = self.initial_state;
+        self.state
+    }
+
+    fn step(&mut self, action: usize, rng: &mut dyn rand::Rng) -> (usize, f64) {
+        let &(next_state, reward) = self.model.outcomes(self.state, action).sample(rng);
+        self.state = next_state;
+        (next_state, reward)
+    }
 }
 
 /// A black-box environment defined by a transition function.
@@ -82,7 +130,21 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::environments::grid_world;
     use rand::{SeedableRng, rngs::StdRng};
+
+    #[test]
+    fn tabular_model_acts_as_environment() {
+        let model = grid_world(3).unwrap();
+        let mut environment = TabularEnvironment::new(&model, 0).unwrap();
+        let mut rng = StdRng::seed_from_u64(0);
+
+        assert_eq!(environment.state_space(), Space::Discrete { size: 9 });
+        assert_eq!(environment.action_space(), Space::Discrete { size: 5 });
+        assert_eq!(environment.step(1, &mut rng), (1, 0.0));
+        assert_eq!(environment.reset(&mut rng), 0);
+        assert!(TabularEnvironment::new(&model, 9).is_err());
+    }
 
     #[test]
     fn black_box_acts_as_environment() {
