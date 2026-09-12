@@ -125,8 +125,7 @@ impl ModelFreeSolver for TD {
         };
 
         let mut q_sa = Array2::<f64>::zeros((n_s, n_a));
-        let mut pi =
-            TabularPolicy::from_q(&q_sa, PolicyObjective::SoftDeterministic(self.epsilon))?;
+        let mut pi = TabularPolicy::uniform(n_s, n_a).unwrap();
 
         for _e in 0..self.episodes {
             let mut st = env.reset(rng);
@@ -134,18 +133,18 @@ impl ModelFreeSolver for TD {
 
             for _ in 0..self.episode_length {
                 let (stp, rt) = env.step(at, rng);
-                let atp = pi.sample_action(&stp, rng);
-
-                // sarsa is (st, at, rt, stp, atp)
 
                 // value update
-                let q_next = match self.variant {
-                    TDVariant::Sarsa => q_sa[[stp, atp]],
+                let (q_next, atp) = match self.variant {
+                    TDVariant::Sarsa => {
+                        let atp = pi.sample_action(&stp, rng);
+                        (q_sa[[stp, atp]], Some(atp))
+                    }
                     TDVariant::ExpectedSarsa => {
                         let p_a = pi.state_probabilities(stp);
-                        q_sa.row(stp).dot(&p_a)
+                        (q_sa.row(stp).dot(&p_a), None)
                     }
-                    TDVariant::QLearning => max_q(q_sa.row(stp)),
+                    TDVariant::QLearning => (max_q(q_sa.row(stp)), None),
                 };
                 let td_target = rt + gamma * q_next;
                 q_sa[[st, at]] -= self.alpha * (q_sa[[st, at]] - td_target);
@@ -158,7 +157,10 @@ impl ModelFreeSolver for TD {
                 );
 
                 st = stp;
-                at = atp;
+                at = match atp {
+                    Some(atp) => atp,
+                    None => pi.sample_action(&st, rng),
+                };
             }
         }
 
