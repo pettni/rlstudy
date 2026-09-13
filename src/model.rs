@@ -1,4 +1,5 @@
 use crate::probability;
+use ndarray::{Array2, ArrayView1};
 
 #[derive(Debug, Clone)]
 pub struct State {
@@ -32,6 +33,8 @@ pub struct TabularModel {
     actions: Vec<Action>,
     // p(s',r|s,a) for each state-action pair
     outcomes: Vec<probability::Distribution<(usize, f64)>>,
+    // phi(s), with one row per state
+    state_features: Option<Array2<f64>>,
 }
 
 impl TabularModel {
@@ -41,6 +44,7 @@ impl TabularModel {
         states: Vec<State>,
         actions: Vec<Action>,
         p_sr_sa: Vec<Vec<probability::Distribution<(usize, f64)>>>,
+        state_features: Option<Array2<f64>>,
     ) -> Result<Self, String> {
         let num_states = states.len();
         let num_actions = actions.len();
@@ -50,6 +54,14 @@ impl TabularModel {
         }
         if num_actions == 0 {
             return Err("model must have at least one action".into());
+        }
+        if let Some(features) = &state_features
+            && features.nrows() != num_states
+        {
+            return Err(format!(
+                "expected {num_states} state feature rows, found {}",
+                features.nrows()
+            ));
         }
         if p_sr_sa.len() != num_states {
             return Err(format!(
@@ -84,6 +96,7 @@ impl TabularModel {
             states,
             actions,
             outcomes,
+            state_features,
         })
     }
 
@@ -94,6 +107,7 @@ impl TabularModel {
         actions: Vec<Action>,
         transition_distribution: F,
         reward_distribution: G,
+        state_features: Option<Array2<f64>>,
     ) -> Result<Self, String>
     where
         F: Fn(usize, usize) -> probability::Distribution<usize>,
@@ -123,7 +137,13 @@ impl TabularModel {
             p_sr_sa.push(p_sr_a);
         }
 
-        Self::new(initial_distribution, states, actions, p_sr_sa)
+        Self::new(
+            initial_distribution,
+            states,
+            actions,
+            p_sr_sa,
+            state_features,
+        )
     }
 
     pub fn initial_distribution(&self) -> &probability::Distribution<usize> {
@@ -136,6 +156,12 @@ impl TabularModel {
 
     pub fn actions(&self) -> &[Action] {
         &self.actions
+    }
+
+    pub fn state_features(&self, state: usize) -> Option<ArrayView1<'_, f64>> {
+        self.state_features
+            .as_ref()
+            .map(|features| features.row(state))
     }
 
     pub fn outcomes(
@@ -171,7 +197,8 @@ mod tests {
                 probability::Distribution::point_mass(0),
                 vec![],
                 actions(1),
-                vec![]
+                vec![],
+                None
             )
             .unwrap_err(),
             "model must have at least one state"
@@ -181,7 +208,8 @@ mod tests {
                 probability::Distribution::point_mass(0),
                 states(1),
                 vec![],
-                vec![vec![]]
+                vec![vec![]],
+                None
             )
             .unwrap_err(),
             "model must have at least one action"
@@ -195,7 +223,8 @@ mod tests {
                 probability::Distribution::point_mass(0),
                 states(1),
                 actions(1),
-                vec![]
+                vec![],
+                None
             )
             .unwrap_err(),
             "expected 1 outcome rows, found 0"
@@ -209,7 +238,8 @@ mod tests {
                 probability::Distribution::point_mass(0),
                 states(1),
                 actions(1),
-                vec![vec![]]
+                vec![vec![]],
+                None,
             )
             .unwrap_err(),
             "expected 1 outcomes for state 0, found 0"
@@ -224,9 +254,45 @@ mod tests {
                 states(1),
                 actions(1),
                 vec![vec![Distribution::point_mass((1, 0.0))]],
+                None
             )
             .unwrap_err(),
             "transition for state 0, action 0 targets state 1, but the model has 1 states"
         );
+    }
+
+    #[test]
+    fn model_exposes_state_features() {
+        let features = Array2::from_shape_vec((2, 2), vec![1.0, 0.0, 0.0, 1.0]).unwrap();
+        let model = TabularModel::new(
+            probability::Distribution::point_mass(0),
+            states(2),
+            actions(1),
+            vec![
+                vec![Distribution::point_mass((0, 0.0))],
+                vec![Distribution::point_mass((1, 0.0))],
+            ],
+            Some(features),
+        )
+        .unwrap();
+
+        assert_eq!(model.state_features(1).unwrap().to_vec(), vec![0.0, 1.0]);
+    }
+
+    #[test]
+    fn model_validates_state_feature_rows() {
+        let error = TabularModel::new(
+            probability::Distribution::point_mass(0),
+            states(2),
+            actions(1),
+            vec![
+                vec![Distribution::point_mass((0, 0.0))],
+                vec![Distribution::point_mass((1, 0.0))],
+            ],
+            Some(Array2::zeros((1, 2))),
+        )
+        .unwrap_err();
+
+        assert_eq!(error, "expected 2 state feature rows, found 1");
     }
 }

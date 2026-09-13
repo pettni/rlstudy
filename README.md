@@ -20,7 +20,7 @@ cargo run --quiet -- solve --system grid_worlds/zhao_3x3.yaml td --episodes 1000
 Display state values and the greedy policy with `icat`:
 
 ```bash
-cargo run --quiet -- solve --gamma 0.9 --system grid_worlds/zhao_5x5.yaml vi | uv run scripts/render_grid_world.py grid_worlds/zhao_5x5.yaml | icat
+cargo run --quiet -- solve --json --gamma 0.9 --system grid_worlds/zhao_5x5.yaml vi | uv run scripts/render_grid_world.py | icat
 ```
 
 Replace `| icat` with `> grid_world.png` to save the image.

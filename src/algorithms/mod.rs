@@ -1,22 +1,23 @@
 use crate::environment::Environment;
 use crate::model::TabularModel;
-use crate::policy::TabularPolicy;
 
+pub mod dqn;
 pub mod monte_carlo;
 pub mod policy_iteration;
 pub mod td;
 
+pub use dqn::DeepQLearning;
 pub use monte_carlo::MonteCarlo;
 pub use policy_iteration::{StoppingCriterion, TruncatedPolicyIteration};
 pub use td::TD;
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct SolveResult {
-    pub policy: TabularPolicy,
-    pub value: Vec<f64>,
-    pub iterations: usize,
-    pub termination: TerminationReason,
+pub struct SolveResult<Observation, Output> {
+    pub policy: Box<dyn crate::policy::DiscretePolicy<Observation = Observation>>,
+    pub output: Output,
+    pub status: SolveStatus,
 }
+
+pub type TabularSolveResult = SolveResult<usize, Vec<f64>>;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ValueSnapshot {
@@ -25,27 +26,44 @@ pub struct ValueSnapshot {
     pub value: Vec<f64>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
 pub struct SolveTrace {
-    pub result: SolveResult,
+    pub result: TabularSolveResult,
     pub snapshots: Vec<ValueSnapshot>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TerminationReason {
-    Converged,
-    IterationLimit,
+pub enum SolveStatus {
+    Converged { iterations: usize },
+    IterationLimit { iterations: usize },
+}
+
+impl SolveStatus {
+    pub fn iterations(self) -> usize {
+        match self {
+            Self::Converged { iterations } | Self::IterationLimit { iterations } => iterations,
+        }
+    }
 }
 
 pub trait ModelBasedSolver {
-    fn solve(&self, model: &TabularModel, gamma: f64) -> Result<SolveResult, String>;
+    type Observation;
+    type Output;
+
+    fn solve(
+        &self,
+        model: &TabularModel,
+        gamma: f64,
+    ) -> Result<SolveResult<Self::Observation, Self::Output>, String>;
 }
 
 pub trait ModelFreeSolver {
+    type Observation;
+    type Output;
+
     fn solve(
         &self,
-        env: &mut dyn Environment<State = usize, Action = usize>,
+        env: &mut dyn Environment<Observation = Self::Observation, Action = usize>,
         gamma: f64,
         rng: &mut dyn rand::Rng,
-    ) -> Result<SolveResult, String>;
+    ) -> Result<SolveResult<Self::Observation, Self::Output>, String>;
 }

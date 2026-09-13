@@ -3,7 +3,7 @@
 # dependencies = ["matplotlib", "pyyaml"]
 # ///
 import argparse
-import re
+import json
 import sys
 
 import matplotlib
@@ -16,29 +16,23 @@ import matplotlib.patches as patches
 
 
 parser = argparse.ArgumentParser()
-parser.add_argument("grid_world")
-args = parser.parse_args()
+parser.parse_args()
 
-with open(args.grid_world) as file:
+solution = json.load(sys.stdin)
+with open(solution["grid_world_definition"]) as file:
     grid_world = yaml.safe_load(file)
 
 side = grid_world["side"]
 forbidden_states = {tuple(state) for state in grid_world["forbidden_states"]}
 goal_states = {tuple(state) for state in grid_world["goal_states"]}
 
-solution_pattern = re.compile(
-    r"^\s*state (?P<state>\d+) \[value (?P<value>[-+.\deE]+)\] -> action (?P<action>\d+)$"
-)
-solution = {}
-for line in sys.stdin:
-    if match := solution_pattern.match(line):
-        state = int(match["state"])
-        solution[state] = (float(match["value"]), int(match["action"]))
-
 num_states = side * side
-if set(solution) != set(range(num_states)):
-    missing = sorted(set(range(num_states)) - set(solution))
-    raise ValueError(f"solver output is missing states: {missing}")
+policy_actions = solution["policy_actions"]
+state_values = solution.get("state_values")
+if len(policy_actions) != num_states:
+    raise ValueError(f"expected {num_states} policy actions, got {len(policy_actions)}")
+if state_values is not None and len(state_values) != num_states:
+    raise ValueError(f"expected {num_states} state values, got {len(state_values)}")
 
 figure, axis = plt.subplots(figsize=(side, side))
 axis.set_xlim(-0.5, side - 0.5)
@@ -77,16 +71,17 @@ actions = {
     4: (0, 0),
 }
 
-for state, (value, action) in solution.items():
+for state, action in enumerate(policy_actions):
     row, column = divmod(state, side)
-    axis.text(
-        column - 0.42,
-        row - 0.38,
-        f"{value:.2f}",
-        horizontalalignment="left",
-        verticalalignment="top",
-        fontsize=9,
-    )
+    if state_values is not None:
+        axis.text(
+            column - 0.42,
+            row - 0.38,
+            f"{state_values[state]:.2f}",
+            horizontalalignment="left",
+            verticalalignment="top",
+            fontsize=9,
+        )
 
     dx, dy = actions[action]
     if (dx, dy) == (0, 0):

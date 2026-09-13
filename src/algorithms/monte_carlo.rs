@@ -1,4 +1,4 @@
-use crate::algorithms::{ModelFreeSolver, SolveResult, TerminationReason};
+use crate::algorithms::{ModelFreeSolver, SolveResult, SolveStatus};
 use crate::environment::{Environment, Space};
 use crate::policy::{Policy, PolicyObjective, TabularPolicy};
 use ndarray::{Array2, Axis};
@@ -27,12 +27,15 @@ impl MonteCarlo {
 }
 
 impl ModelFreeSolver for MonteCarlo {
+    type Observation = usize;
+    type Output = Vec<f64>;
+
     fn solve(
         &self,
-        env: &mut dyn Environment<State = usize, Action = usize>,
+        env: &mut dyn Environment<Observation = usize, Action = usize>,
         gamma: f64,
         rng: &mut dyn rand::Rng,
-    ) -> Result<SolveResult, String> {
+    ) -> Result<crate::algorithms::TabularSolveResult, String> {
         let Space::Discrete { size: n_s } = env.state_space() else {
             return Err("Monte Carlo requires a discrete state space".into());
         };
@@ -85,13 +88,14 @@ impl ModelFreeSolver for MonteCarlo {
         let value = (&pi.probabilities() * &q_sa).sum_axis(Axis(1)).to_vec();
 
         Ok(SolveResult {
-            policy: pi,
-            value,
-            iterations: self
-                .episodes
-                .try_into()
-                .map_err(|_| "episode count does not fit usize")?,
-            termination: TerminationReason::IterationLimit,
+            policy: Box::new(pi),
+            output: value,
+            status: SolveStatus::IterationLimit {
+                iterations: self
+                    .episodes
+                    .try_into()
+                    .map_err(|_| "episode count does not fit usize")?,
+            },
         })
     }
 }

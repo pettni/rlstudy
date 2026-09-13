@@ -1,6 +1,4 @@
-use crate::algorithms::{
-    ModelBasedSolver, SolveResult, SolveTrace, TerminationReason, ValueSnapshot,
-};
+use crate::algorithms::{ModelBasedSolver, SolveResult, SolveStatus, SolveTrace, ValueSnapshot};
 use crate::model::TabularModel;
 use crate::policy::TabularPolicy;
 use ndarray::{Array1, Array2, Array3};
@@ -38,7 +36,7 @@ impl StoppingCriterion {
         iter: usize,
         previous: &Array1<f64>,
         current: &Array1<f64>,
-    ) -> Option<TerminationReason> {
+    ) -> Option<SolveStatus> {
         if self.tolerance.is_some_and(|tolerance| {
             (previous - current)
                 .mapv(abs)
@@ -46,9 +44,9 @@ impl StoppingCriterion {
                 .fold(0.0f64, |a, &b| a.max(b))
                 <= tolerance
         }) {
-            Some(TerminationReason::Converged)
+            Some(SolveStatus::Converged { iterations: iter })
         } else if iter >= self.max_iterations {
-            Some(TerminationReason::IterationLimit)
+            Some(SolveStatus::IterationLimit { iterations: iter })
         } else {
             None
         }
@@ -129,18 +127,17 @@ impl TruncatedPolicyIteration {
             let new_pi = improve_policy(model, &v_pi, gamma);
             let new_v_pi =
                 policy_evaluation(model, &new_pi, &v_pi, gamma, &self.inner, iter, &mut trace);
-            let termination = self.outer.stop_reason(iter, &v_pi, &new_v_pi);
+            let status = self.outer.stop_reason(iter, &v_pi, &new_v_pi);
 
             pi = new_pi;
             v_pi = new_v_pi;
 
-            if let Some(termination) = termination {
+            if let Some(status) = status {
                 return Ok(SolveTrace {
                     result: SolveResult {
-                        policy: pi,
-                        value: v_pi.to_vec(),
-                        iterations: iter,
-                        termination,
+                        policy: Box::new(pi),
+                        output: v_pi.to_vec(),
+                        status,
                     },
                     snapshots: trace.snapshots,
                 });
@@ -152,7 +149,14 @@ impl TruncatedPolicyIteration {
 }
 
 impl ModelBasedSolver for TruncatedPolicyIteration {
-    fn solve(&self, model: &TabularModel, gamma: f64) -> Result<SolveResult, String> {
+    type Observation = usize;
+    type Output = Vec<f64>;
+
+    fn solve(
+        &self,
+        model: &TabularModel,
+        gamma: f64,
+    ) -> Result<crate::algorithms::TabularSolveResult, String> {
         Ok(self.solve_with_trace(model, gamma)?.result)
     }
 }

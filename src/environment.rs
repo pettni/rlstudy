@@ -11,17 +11,17 @@ pub enum Space {
 
 /// A stateful environment that can be reset and stepped.
 pub trait Environment {
-    type State;
+    type Observation;
     type Action;
 
     fn state_space(&self) -> Space;
 
     fn action_space(&self) -> Space;
 
-    fn reset(&mut self, rng: &mut dyn rand::Rng) -> Self::State;
+    fn reset(&mut self, rng: &mut dyn rand::Rng) -> Self::Observation;
 
     /// Take `action` and return the next state and reward.
-    fn step(&mut self, action: Self::Action, rng: &mut dyn rand::Rng) -> (Self::State, f64);
+    fn step(&mut self, action: Self::Action, rng: &mut dyn rand::Rng) -> (Self::Observation, f64);
 }
 
 pub struct TabularEnvironment<'a> {
@@ -36,7 +36,7 @@ impl<'a> TabularEnvironment<'a> {
 }
 
 impl Environment for TabularEnvironment<'_> {
-    type State = usize;
+    type Observation = usize;
     type Action = usize;
 
     fn state_space(&self) -> Space {
@@ -63,6 +63,75 @@ impl Environment for TabularEnvironment<'_> {
         };
         self.state = Some(next_state);
         (next_state, reward)
+    }
+}
+
+/// A tabular environment observed through its state-feature vectors.
+pub struct FeatureEnvironment<'a> {
+    environment: TabularEnvironment<'a>,
+    low: Array1<f64>,
+    high: Array1<f64>,
+}
+
+impl<'a> FeatureEnvironment<'a> {
+    pub fn new(model: &'a TabularModel) -> Result<Self, String> {
+        let first = model
+            .state_features(0)
+            .ok_or_else(|| "model has no state features".to_string())?;
+        let mut low = first.to_owned();
+        let mut high = first.to_owned();
+
+        for state in 1..model.states().len() {
+            for (feature, value) in model
+                .state_features(state)
+                .expect("model feature rows have a common shape")
+                .iter()
+                .enumerate()
+            {
+                low[feature] = low[feature].min(*value);
+                high[feature] = high[feature].max(*value);
+            }
+        }
+
+        Ok(Self {
+            environment: TabularEnvironment::new(model)?,
+            low,
+            high,
+        })
+    }
+
+    fn observe(&self, state: usize) -> Array1<f64> {
+        self.environment
+            .model
+            .state_features(state)
+            .expect("feature environment validates state features")
+            .to_owned()
+    }
+}
+
+impl Environment for FeatureEnvironment<'_> {
+    type Observation = Array1<f64>;
+    type Action = usize;
+
+    fn state_space(&self) -> Space {
+        Space::Continuous {
+            low: self.low.clone(),
+            high: self.high.clone(),
+        }
+    }
+
+    fn action_space(&self) -> Space {
+        self.environment.action_space()
+    }
+
+    fn reset(&mut self, rng: &mut dyn rand::Rng) -> Array1<f64> {
+        let state = self.environment.reset(rng);
+        self.observe(state)
+    }
+
+    fn step(&mut self, action: usize, rng: &mut dyn rand::Rng) -> (Array1<f64>, f64) {
+        let (state, reward) = self.environment.step(action, rng);
+        (self.observe(state), reward)
     }
 }
 
@@ -95,7 +164,7 @@ impl<F> Environment for BlackBox<F>
 where
     F: FnMut(usize, usize) -> (usize, f64),
 {
-    type State = usize;
+    type Observation = usize;
     type Action = usize;
 
     fn state_space(&self) -> Space {
@@ -126,6 +195,9 @@ where
 mod tests {
     use super::*;
     use crate::environments::grid_world;
+    use crate::model::{Action, State};
+    use crate::probability::Distribution;
+    use ndarray::Array2;
     use rand::{SeedableRng, rngs::StdRng};
 
     #[test]
@@ -138,6 +210,29 @@ mod tests {
         assert_eq!(environment.action_space(), Space::Discrete { size: 5 });
         assert_eq!(environment.reset(&mut rng), 0);
         assert_eq!(environment.step(1, &mut rng), (1, 0.0));
+    }
+
+    #[test]
+    fn feature_environment_exposes_state_features() {
+        let model = TabularModel::new(
+            Distribution::point_mass(0),
+            vec![State::new("s0")],
+            vec![Action::new("a0")],
+            vec![vec![Distribution::point_mass((0, 0.0))]],
+            Some(Array2::from_shape_vec((1, 2), vec![1.0, 2.0]).unwrap()),
+        )
+        .unwrap();
+        let mut environment = FeatureEnvironment::new(&model).unwrap();
+        let mut rng = StdRng::seed_from_u64(0);
+
+        assert_eq!(environment.reset(&mut rng).to_vec(), vec![1.0, 2.0]);
+        assert_eq!(
+            environment.state_space(),
+            Space::Continuous {
+                low: Array1::from_vec(vec![1.0, 2.0]),
+                high: Array1::from_vec(vec![1.0, 2.0]),
+            }
+        );
     }
 
     #[test]

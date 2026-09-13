@@ -1,4 +1,4 @@
-use crate::algorithms::{ModelFreeSolver, SolveResult, TerminationReason};
+use crate::algorithms::{ModelFreeSolver, SolveResult, SolveStatus};
 use crate::environment::{Environment, Space};
 use crate::policy::{Policy, PolicyObjective, TabularPolicy};
 use ndarray::{Array2, ArrayView1};
@@ -36,6 +36,8 @@ pub struct TD {
     alpha: f64,
     // algorithm type
     variant: TDVariant,
+    // base policy for off-policy learning (if any)
+    behavior_policy: Option<TabularPolicy>,
 }
 
 impl TD {
@@ -45,7 +47,14 @@ impl TD {
         epsilon: f64,
         alpha: f64,
     ) -> Result<Self, String> {
-        Self::with_variant(episodes, episode_length, epsilon, alpha, TDVariant::Sarsa)
+        Self::with_variant(
+            episodes,
+            episode_length,
+            epsilon,
+            alpha,
+            TDVariant::Sarsa,
+            None,
+        )
     }
 
     pub fn expected(
@@ -60,6 +69,7 @@ impl TD {
             epsilon,
             alpha,
             TDVariant::ExpectedSarsa,
+            None,
         )
     }
 
@@ -75,6 +85,23 @@ impl TD {
             epsilon,
             alpha,
             TDVariant::QLearning,
+            None,
+        )
+    }
+
+    pub fn q_learning_off_policy(
+        episodes: u64,
+        episode_length: u64,
+        alpha: f64,
+        behavior_policy: TabularPolicy,
+    ) -> Result<Self, String> {
+        Self::with_variant(
+            episodes,
+            episode_length,
+            0.,
+            alpha,
+            TDVariant::QLearning,
+            Some(behavior_policy),
         )
     }
 
@@ -84,6 +111,7 @@ impl TD {
         epsilon: f64,
         alpha: f64,
         variant: TDVariant,
+        behavior_policy: Option<TabularPolicy>,
     ) -> Result<Self, String> {
         if episodes == 0 {
             return Err("episodes must be positive".into());
@@ -103,17 +131,21 @@ impl TD {
             epsilon,
             alpha,
             variant,
+            behavior_policy,
         })
     }
 }
 
 impl ModelFreeSolver for TD {
+    type Observation = usize;
+    type Output = Vec<f64>;
+
     fn solve(
         &self,
-        env: &mut dyn Environment<State = usize, Action = usize>,
+        env: &mut dyn Environment<Observation = usize, Action = usize>,
         gamma: f64,
         rng: &mut dyn rand::Rng,
-    ) -> Result<SolveResult, String> {
+    ) -> Result<crate::algorithms::TabularSolveResult, String> {
         if !gamma.is_finite() || !(0.0..1.0).contains(&gamma) {
             return Err("gamma must be finite and in [0, 1)".into());
         }
@@ -125,11 +157,15 @@ impl ModelFreeSolver for TD {
         };
 
         let mut q_sa = Array2::<f64>::zeros((n_s, n_a));
-        let mut pi = TabularPolicy::uniform(n_s, n_a).unwrap();
+        let mut pi_target = TabularPolicy::uniform(n_s, n_a).unwrap();
 
         for _e in 0..self.episodes {
             let mut st = env.reset(rng);
-            let mut at = pi.sample_action(&st, rng);
+            let mut at = self
+                .behavior_policy
+                .as_ref()
+                .unwrap_or(&pi_target)
+                .sample_action(&st, rng);
 
             for _ in 0..self.episode_length {
                 let (stp, rt) = env.step(at, rng);
@@ -137,11 +173,15 @@ impl ModelFreeSolver for TD {
                 // value update
                 let (q_next, atp) = match self.variant {
                     TDVariant::Sarsa => {
-                        let atp = pi.sample_action(&stp, rng);
+                        let atp = self
+                            .behavior_policy
+                            .as_ref()
+                            .unwrap_or(&pi_target)
+                            .sample_action(&stp, rng);
                         (q_sa[[stp, atp]], Some(atp))
                     }
                     TDVariant::ExpectedSarsa => {
-                        let p_a = pi.state_probabilities(stp);
+                        let p_a = pi_target.state_probabilities(stp);
                         (q_sa.row(stp).dot(&p_a), None)
                     }
                     TDVariant::QLearning => (max_q(q_sa.row(stp)), None),
@@ -150,7 +190,7 @@ impl ModelFreeSolver for TD {
                 q_sa[[st, at]] -= self.alpha * (q_sa[[st, at]] - td_target);
 
                 // policy improvement at st
-                pi.update_at(
+                pi_target.update_at(
                     st,
                     &q_sa.row(st),
                     PolicyObjective::SoftDeterministic(self.epsilon),
@@ -159,7 +199,11 @@ impl ModelFreeSolver for TD {
                 st = stp;
                 at = match atp {
                     Some(atp) => atp,
-                    None => pi.sample_action(&st, rng),
+                    None => self
+                        .behavior_policy
+                        .as_ref()
+                        .unwrap_or(&pi_target)
+                        .sample_action(&st, rng),
                 };
             }
         }
@@ -172,20 +216,25 @@ impl ModelFreeSolver for TD {
             }
             TDVariant::Sarsa | TDVariant::ExpectedSarsa => {
                 let value = (0..n_s)
-                    .map(|s| (0..n_a).map(|a| pi.probability(s, a) * q_sa[[s, a]]).sum())
+                    .map(|s| {
+                        (0..n_a)
+                            .map(|a| pi_target.probability(s, a) * q_sa[[s, a]])
+                            .sum()
+                    })
                     .collect();
-                (pi, value)
+                (pi_target, value)
             }
         };
 
         Ok(SolveResult {
-            policy,
-            value,
-            iterations: self
-                .episodes
-                .try_into()
-                .map_err(|_| "episode count does not fit usize")?,
-            termination: TerminationReason::IterationLimit,
+            policy: Box::new(policy),
+            output: value,
+            status: SolveStatus::IterationLimit {
+                iterations: self
+                    .episodes
+                    .try_into()
+                    .map_err(|_| "episode count does not fit usize")?,
+            },
         })
     }
 }

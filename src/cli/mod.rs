@@ -4,9 +4,11 @@ mod systems;
 use self::solvers::{SelectedSolver, Solver, build_solver};
 use self::systems::{SelectedSystem, build_system};
 use clap::{Parser, Subcommand};
+use ndarray::Array1;
 use rand::{SeedableRng, rngs::StdRng};
-use rlstudy::algorithms::{ModelBasedSolver, SolveResult};
-use rlstudy::environment::TabularEnvironment;
+use rlstudy::algorithms::{ModelBasedSolver, ModelFreeSolver, SolveResult, TabularSolveResult};
+use rlstudy::environment::{FeatureEnvironment, TabularEnvironment};
+use serde::Serialize;
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::PathBuf;
@@ -37,6 +39,10 @@ struct SolveArgs {
 
     #[arg(short, long, default_value_t = 0.9)]
     gamma: f64,
+
+    /// Write values and greedy policy actions as JSON.
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Parser)]
@@ -57,7 +63,7 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
 
 fn trace(args: &TraceArgs) -> Result<(), Box<dyn std::error::Error>> {
     let system = build_system(&args.solve.system)?;
-    let solver = build_solver(&args.solve.solver)?;
+    let solver = build_solver(&args.solve.solver, system.num_actions())?;
     let model = system.as_model().ok_or("tracing requires a model system")?;
     let SelectedSolver::ModelBased(solver) = solver else {
         return Err("tracing requires a model-based solver".into());
@@ -84,11 +90,15 @@ fn trace(args: &TraceArgs) -> Result<(), Box<dyn std::error::Error>> {
 
 fn solve(args: &SolveArgs) -> Result<(), Box<dyn std::error::Error>> {
     let mut system = build_system(&args.system)?;
-    let solver = build_solver(&args.solver)?;
+    let solver = build_solver(&args.solver, system.num_actions())?;
     let mut rng = StdRng::seed_from_u64(0);
     let result = run_solver(solver, &mut system, args.gamma, &mut rng)?;
 
-    print_result(&args.system, &args.solver, &result, args.gamma);
+    if args.json {
+        write_json_result(&args.system, &args.solver, &system, &result, args.gamma)?;
+    } else {
+        print_result(&args.system, &args.solver, result, args.gamma);
+    }
     Ok(())
 }
 
@@ -97,15 +107,15 @@ fn run_solver(
     system: &mut SelectedSystem,
     gamma: f64,
     rng: &mut dyn rand::Rng,
-) -> Result<SolveResult, Box<dyn std::error::Error>> {
+) -> Result<SelectedResult, Box<dyn std::error::Error>> {
     match &solver {
         SelectedSolver::ModelBased(solver) => {
             let model = system
                 .as_model()
                 .ok_or("model-based solver requires a model system")?;
-            Ok(solver.solve(model, gamma)?)
+            Ok(SelectedResult::Tabular(solver.solve(model, gamma)?))
         }
-        SelectedSolver::ModelFree(solver) => {
+        SelectedSolver::MonteCarlo(solver) => {
             let result = match system {
                 SelectedSystem::Model(model) => {
                     solver.solve(&mut TabularEnvironment::new(model)?, gamma, rng)
@@ -114,36 +124,124 @@ fn run_solver(
                     solver.solve(environment.as_mut(), gamma, rng)
                 }
             };
-            Ok(result?)
+            Ok(SelectedResult::Tabular(result?))
+        }
+        SelectedSolver::TD(solver) => {
+            let result = match system {
+                SelectedSystem::Model(model) => {
+                    solver.solve(&mut TabularEnvironment::new(model)?, gamma, rng)
+                }
+                SelectedSystem::BlackBox(environment) => {
+                    solver.solve(environment.as_mut(), gamma, rng)
+                }
+            };
+            Ok(SelectedResult::Tabular(result?))
+        }
+        SelectedSolver::DQN(solver) => {
+            let model = system
+                .as_model()
+                .ok_or("DQN requires a model with state features")?;
+            let mut environment = FeatureEnvironment::new(model)?;
+            Ok(SelectedResult::DQN(solver.solve(
+                &mut environment,
+                gamma,
+                rng,
+            )?))
         }
     }
 }
 
-fn print_result(system: &str, solver: &Solver, result: &SolveResult, gamma: f64) {
+enum SelectedResult {
+    Tabular(TabularSolveResult),
+    DQN(SolveResult<Array1<f64>, ()>),
+}
+
+#[derive(Serialize)]
+struct VisualizationResult<'a> {
+    grid_world_definition: &'a str,
+    solver: &'a str,
+    gamma: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    state_values: Option<&'a [f64]>,
+    policy_actions: Vec<usize>,
+}
+
+fn write_json_result(
+    system_name: &str,
+    solver: &Solver,
+    system: &SelectedSystem,
+    result: &SelectedResult,
+    gamma: f64,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let model = system
+        .as_model()
+        .ok_or("JSON output requires a grid-world model")?;
+    let grid_world_definition = match system_name {
+        "gridworld" => "grid_worlds/zhao_3x3.yaml",
+        path => path,
+    };
+
+    let (state_values, policy_actions) = match result {
+        SelectedResult::Tabular(result) => (
+            Some(result.output.as_slice()),
+            (0..result.output.len())
+                .map(|state| result.policy.greedy_action(&state))
+                .collect(),
+        ),
+        SelectedResult::DQN(result) => (
+            None,
+            (0..model.states().len())
+                .map(|state| {
+                    let observation = model
+                        .state_features(state)
+                        .expect("DQN requires model state features")
+                        .to_owned();
+                    result.policy.greedy_action(&observation)
+                })
+                .collect(),
+        ),
+    };
+
+    serde_json::to_writer(
+        std::io::stdout(),
+        &VisualizationResult {
+            grid_world_definition,
+            solver: solver.name(),
+            gamma,
+            state_values,
+            policy_actions,
+        },
+    )?;
+    println!();
+    Ok(())
+}
+
+fn print_result(system: &str, solver: &Solver, result: SelectedResult, gamma: f64) {
     println!(
         "system={} solver={} gamma={:.3}",
         system,
         solver.name(),
         gamma
     );
-    if let Some(v0) = result.value.first() {
-        println!("value[0]={:.4}", v0);
-    }
-    println!("iterations={}", result.iterations);
-    println!("termination={:?}", result.termination);
-    println!("policy:");
-    for s in 0..result.policy.num_states() {
-        let action = (0..result.policy.num_actions())
-            .max_by(|&a, &b| {
-                result
-                    .policy
-                    .probability(s, a)
-                    .total_cmp(&result.policy.probability(s, b))
-            })
-            .expect("policy has actions");
-        println!(
-            "  state {} [value {:.3}] -> action {}",
-            s, result.value[s], action
-        );
+    match result {
+        SelectedResult::Tabular(result) => {
+            if let Some(v0) = result.output.first() {
+                println!("value[0]={:.4}", v0);
+            }
+            println!("iterations={}", result.status.iterations());
+            println!("status={:?}", result.status);
+            println!("policy:");
+            for s in 0..result.output.len() {
+                let action = result.policy.greedy_action(&s);
+                println!(
+                    "  state {} [value {:.3}] -> action {}",
+                    s, result.output[s], action
+                );
+            }
+        }
+        SelectedResult::DQN(result) => {
+            println!("iterations={}", result.status.iterations());
+            println!("status={:?}", result.status);
+        }
     }
 }

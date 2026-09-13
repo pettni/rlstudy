@@ -1,23 +1,17 @@
 use rand::{SeedableRng, rngs::StdRng};
 use rlstudy::algorithms::{
-    ModelBasedSolver, ModelFreeSolver, MonteCarlo, SolveResult, StoppingCriterion, TD,
-    TerminationReason, TruncatedPolicyIteration,
+    ModelBasedSolver, ModelFreeSolver, MonteCarlo, SolveStatus, StoppingCriterion, TD,
+    TabularSolveResult, TruncatedPolicyIteration,
 };
 use rlstudy::environment::{BlackBox, TabularEnvironment};
 use rlstudy::environments::grid_world;
+use rlstudy::policy::TabularPolicy;
 
-fn preferred_action(result: &SolveResult, state: usize) -> usize {
-    (0..result.policy.num_actions())
-        .max_by(|&a, &b| {
-            result
-                .policy
-                .probability(state, a)
-                .total_cmp(&result.policy.probability(state, b))
-        })
-        .unwrap()
+fn preferred_action(result: &TabularSolveResult, state: usize) -> usize {
+    result.policy.greedy_action(&state)
 }
 
-fn assert_solves_grid_world(name: &str, result: &SolveResult) {
+fn assert_solves_grid_world(name: &str, result: &TabularSolveResult) {
     assert!(
         [1, 2].contains(&preferred_action(result, 0)),
         "{name}: policy should move right or down from state 0",
@@ -41,9 +35,9 @@ fn model_based_solver_solves_grid_world(name: &str, solver: TruncatedPolicyItera
     assert_solves_grid_world(name, &result);
 
     // The goal state (bottom-right, index 8) should have the highest value.
-    let goal_value = result.value[8];
+    let goal_value = result.output[8];
     let max_value = result
-        .value
+        .output
         .iter()
         .copied()
         .fold(f64::NEG_INFINITY, f64::max);
@@ -51,36 +45,36 @@ fn model_based_solver_solves_grid_world(name: &str, solver: TruncatedPolicyItera
         (goal_value - max_value).abs() < 1e-6,
         "{}: goal state should have the maximum value, got {:?}",
         name,
-        result.value
+        result.output
     );
-    assert_eq!(result.termination, TerminationReason::Converged);
+    assert!(matches!(result.status, SolveStatus::Converged { .. }));
 
     assert_eq!(
-        result.policy.probability(0, 1),
-        1.0,
+        preferred_action(&result, 0),
+        1,
         "{}: policy action at state 0 should be 1",
         name,
     );
 
     assert_eq!(
-        result.policy.probability(1, 2),
-        1.0,
+        preferred_action(&result, 1),
+        2,
         "{}: policy action at state 1 should be 2",
         name,
     );
 
     assert_eq!(
-        result.policy.probability(2, 3),
-        1.0,
+        preferred_action(&result, 2),
+        3,
         "{}: policy action at state 2 should be 3",
         name,
     );
 
     assert!(
-        result.iterations < 1000,
+        result.status.iterations() < 1000,
         "{}: solver took too many iterations: {}",
         name,
-        result.iterations
+        result.status.iterations()
     );
 }
 
@@ -125,8 +119,10 @@ fn monte_carlo_solves_grid_world() {
         .unwrap();
 
     assert_solves_grid_world("monte-carlo", &result);
-    assert_eq!(result.iterations, 10_000);
-    assert_eq!(result.termination, TerminationReason::IterationLimit);
+    assert_eq!(
+        result.status,
+        SolveStatus::IterationLimit { iterations: 10_000 }
+    );
 }
 
 #[test]
@@ -140,8 +136,10 @@ fn sarsa_solves_grid_world() {
         .unwrap();
 
     assert_solves_grid_world("sarsa", &result);
-    assert_eq!(result.iterations, 10_000);
-    assert_eq!(result.termination, TerminationReason::IterationLimit);
+    assert_eq!(
+        result.status,
+        SolveStatus::IterationLimit { iterations: 10_000 }
+    );
 }
 
 #[test]
@@ -155,8 +153,10 @@ fn expected_sarsa_solves_grid_world() {
         .unwrap();
 
     assert_solves_grid_world("expected-sarsa", &result);
-    assert_eq!(result.iterations, 10_000);
-    assert_eq!(result.termination, TerminationReason::IterationLimit);
+    assert_eq!(
+        result.status,
+        SolveStatus::IterationLimit { iterations: 10_000 }
+    );
 }
 
 #[test]
@@ -170,8 +170,27 @@ fn q_learning_solves_grid_world() {
         .unwrap();
 
     assert_solves_grid_world("q-learning", &result);
-    assert_eq!(result.iterations, 10_000);
-    assert_eq!(result.termination, TerminationReason::IterationLimit);
+    assert_eq!(
+        result.status,
+        SolveStatus::IterationLimit { iterations: 10_000 }
+    );
+}
+
+#[test]
+fn q_learning_off_policy_solves_grid_world() {
+    let model = grid_world(3).unwrap();
+    let mut environment = TabularEnvironment::new(&model).unwrap();
+    let mut rng = StdRng::seed_from_u64(0);
+    let result = TD::q_learning_off_policy(10_000, 30, 0.1, TabularPolicy::uniform(9, 5).unwrap())
+        .unwrap()
+        .solve(&mut environment, 0.5, &mut rng)
+        .unwrap();
+
+    assert_solves_grid_world("q-learning", &result);
+    assert_eq!(
+        result.status,
+        SolveStatus::IterationLimit { iterations: 10_000 }
+    );
 }
 
 #[test]
@@ -186,10 +205,10 @@ fn q_learning_uses_negative_next_state_values() {
         .unwrap();
 
     assert!(
-        result.value[0] < -1.5,
+        result.output[0] < -1.5,
         "Q-learning must not clamp a negative next-state value to zero"
     );
-    assert_eq!(result.policy.probability(0, 0), 1.0);
+    assert_eq!(preferred_action(&result, 0), 0);
 }
 
 #[test]
@@ -215,7 +234,7 @@ fn solver_reports_iteration_limit() {
 
     let result = solver.solve(&model, 0.5).unwrap();
 
-    assert_eq!(result.termination, TerminationReason::IterationLimit);
+    assert_eq!(result.status, SolveStatus::IterationLimit { iterations: 1 });
 }
 
 #[test]
@@ -234,5 +253,5 @@ fn solver_trace_records_each_evaluation_sweep() {
     assert_eq!(trace.snapshots[2].policy_iteration, 0);
     assert_eq!(trace.snapshots[3].policy_iteration, 1);
     assert_eq!(trace.snapshots[4].evaluation_sweep, 4);
-    assert_eq!(trace.snapshots[4].value, trace.result.value);
+    assert_eq!(trace.snapshots[4].value, trace.result.output);
 }

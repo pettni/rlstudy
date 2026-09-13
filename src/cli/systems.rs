@@ -1,11 +1,11 @@
-use rlstudy::environment::{BlackBox, Environment};
+use rlstudy::environment::{BlackBox, Environment, Space};
 use rlstudy::environments::{grid_world, load_grid_world};
 use rlstudy::model::TabularModel;
 use std::path::Path;
 
 pub(super) enum SelectedSystem {
     Model(TabularModel),
-    BlackBox(Box<dyn Environment<State = usize, Action = usize>>),
+    BlackBox(Box<dyn Environment<Observation = usize, Action = usize>>),
 }
 
 impl SelectedSystem {
@@ -14,6 +14,17 @@ impl SelectedSystem {
             Self::Model(model) => Some(model),
             Self::BlackBox(_) => None,
         }
+    }
+
+    pub(super) fn num_actions(&self) -> usize {
+        let space = match self {
+            Self::Model(model) => return model.actions().len(),
+            Self::BlackBox(environment) => environment.action_space(),
+        };
+        let Space::Discrete { size } = space else {
+            unreachable!("CLI systems have discrete actions")
+        };
+        size
     }
 }
 

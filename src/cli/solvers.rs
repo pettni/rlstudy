@@ -1,7 +1,8 @@
 use clap::{Parser, Subcommand};
 use rlstudy::algorithms::{
-    ModelFreeSolver, MonteCarlo, StoppingCriterion, TD, TruncatedPolicyIteration,
+    DeepQLearning, MonteCarlo, StoppingCriterion, TD, TruncatedPolicyIteration,
 };
+use rlstudy::policy::uniform::UniformPolicy;
 
 #[derive(Subcommand, Clone)]
 pub(super) enum Solver {
@@ -10,6 +11,7 @@ pub(super) enum Solver {
     TPI(TpiArgs),
     MC(MonteCarloArgs),
     TD(TDArgs),
+    DQN(DqnArgs),
 }
 
 impl Solver {
@@ -22,6 +24,7 @@ impl Solver {
             Self::TD(args) if args.q_learning => "q-learning",
             Self::TD(args) if args.expected => "expected-sarsa",
             Self::TD(_) => "sarsa",
+            Self::DQN(_) => "dqn",
         }
     }
 }
@@ -72,12 +75,33 @@ pub(super) struct TDArgs {
     q_learning: bool,
 }
 
-pub(super) enum SelectedSolver {
-    ModelBased(TruncatedPolicyIteration),
-    ModelFree(Box<dyn ModelFreeSolver>),
+#[derive(Parser, Clone)]
+pub(super) struct DqnArgs {
+    #[arg(long, default_value_t = 0.001)]
+    learning_rate: f64,
+    #[arg(long, default_value_t = 64)]
+    batch_size: usize,
+    #[arg(long, default_value_t = 1_000)]
+    replay_capacity: usize,
+    #[arg(long, default_value_t = 100_000)]
+    iterations: usize,
+    #[arg(long, default_value_t = 500)]
+    target_sync_steps: usize,
+    #[arg(long, default_value_t = 64)]
+    hidden_dims: usize,
 }
 
-pub(super) fn build_solver(solver: &Solver) -> Result<SelectedSolver, Box<dyn std::error::Error>> {
+pub(super) enum SelectedSolver {
+    ModelBased(TruncatedPolicyIteration),
+    MonteCarlo(MonteCarlo),
+    TD(TD),
+    DQN(DeepQLearning),
+}
+
+pub(super) fn build_solver(
+    solver: &Solver,
+    num_actions: usize,
+) -> Result<SelectedSolver, Box<dyn std::error::Error>> {
     match solver {
         Solver::VI(args) => Ok(SelectedSolver::ModelBased(TruncatedPolicyIteration::new(
             build_stopping_criterion(args)?,
@@ -91,11 +115,11 @@ pub(super) fn build_solver(solver: &Solver) -> Result<SelectedSolver, Box<dyn st
             stopping_criterion(args.outer_tol, args.outer_max_iter)?,
             stopping_criterion(args.inner_tol, args.inner_max_iter)?,
         ))),
-        Solver::MC(args) => Ok(SelectedSolver::ModelFree(Box::new(MonteCarlo::new(
+        Solver::MC(args) => Ok(SelectedSolver::MonteCarlo(MonteCarlo::new(
             args.episodes,
             args.episode_length,
             args.epsilon,
-        )))),
+        ))),
         Solver::TD(args) => {
             let solver = if args.q_learning {
                 TD::q_learning(args.episodes, args.episode_length, args.epsilon, args.alpha)?
@@ -104,8 +128,17 @@ pub(super) fn build_solver(solver: &Solver) -> Result<SelectedSolver, Box<dyn st
             } else {
                 TD::new(args.episodes, args.episode_length, args.epsilon, args.alpha)?
             };
-            Ok(SelectedSolver::ModelFree(Box::new(solver)))
+            Ok(SelectedSolver::TD(solver))
         }
+        Solver::DQN(args) => Ok(SelectedSolver::DQN(DeepQLearning::new(
+            args.learning_rate,
+            args.batch_size,
+            args.replay_capacity,
+            args.iterations,
+            args.target_sync_steps,
+            args.hidden_dims,
+            Box::new(UniformPolicy::new(num_actions)),
+        )?)),
     }
 }
 

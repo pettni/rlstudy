@@ -1,5 +1,6 @@
 use crate::model::{Action, State, TabularModel};
 use crate::probability::Distribution;
+use ndarray::Array2;
 use serde::Deserialize;
 use std::fs;
 use std::path::Path;
@@ -104,6 +105,11 @@ pub fn grid_world_impl(spec: GridWorldSpec) -> Result<TabularModel, String> {
         Action::new("stay"),
     ];
 
+    let features = Array2::from_shape_fn((n_s, 2), |(s, i)| -> f64 {
+        let (row, col) = idx_to_coords(s, n);
+        [row as f64, col as f64][i]
+    });
+
     let initial_distribution: Distribution<usize> = match spec.initial_distribution {
         InitialDistribution::Fixed { state } => {
             Distribution::<usize>::point_mass(coord_to_idx(state, n))
@@ -151,6 +157,7 @@ pub fn grid_world_impl(spec: GridWorldSpec) -> Result<TabularModel, String> {
             };
             Distribution::point_mass(reward)
         },
+        Some(features),
     )
 }
 

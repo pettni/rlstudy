@@ -1,16 +1,5 @@
-use crate::environment::Space;
+use super::DiscretePolicy;
 use ndarray::{Array2, ArrayView1, ArrayView2, Axis};
-
-/// A policy maps states to action probabilities.
-pub trait Policy {
-    type State;
-    type Action;
-
-    fn state_space(&self) -> Space;
-    fn action_space(&self) -> Space;
-
-    fn sample_action(&self, state: &Self::State, rng: &mut dyn rand::Rng) -> Self::Action;
-}
 
 pub enum PolicyObjective {
     /// Policy greedily maximizes q-value
@@ -156,40 +145,18 @@ impl TabularPolicy {
     }
 }
 
-impl Policy for TabularPolicy {
-    type State = usize;
-    type Action = usize;
+impl DiscretePolicy for TabularPolicy {
+    type Observation = usize;
 
-    fn state_space(&self) -> Space {
-        Space::Discrete {
-            size: self.num_states(),
-        }
-    }
-
-    fn action_space(&self) -> Space {
-        Space::Discrete {
-            size: self.num_actions(),
-        }
-    }
-
-    fn sample_action(&self, state: &usize, rng: &mut dyn rand::Rng) -> usize {
-        use rand::RngExt;
-
-        let u: f64 = rng.random();
-        let mut cumulative = 0.0;
-        for action in 0..self.num_actions() {
-            cumulative += self.probability(*state, action);
-            if u < cumulative {
-                return action;
-            }
-        }
-        self.num_actions() - 1
+    fn action_probabilities(&self, state: &usize) -> ndarray::Array1<f64> {
+        self.state_probabilities(*state).to_owned()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::policy::Policy;
     use ndarray::array;
     use rand::{SeedableRng, rngs::StdRng};
 
@@ -198,8 +165,6 @@ mod tests {
         let policy = TabularPolicy::uniform(3, 5).unwrap();
         let mut rng = StdRng::seed_from_u64(0);
 
-        assert_eq!(policy.state_space(), Space::Discrete { size: 3 });
-        assert_eq!(policy.action_space(), Space::Discrete { size: 5 });
         for state in 0..3 {
             for _ in 0..100 {
                 assert!(policy.sample_action(&state, &mut rng) < 5);
