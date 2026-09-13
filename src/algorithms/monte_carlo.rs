@@ -1,7 +1,7 @@
 use crate::algorithms::{ModelFreeSolver, SolveResult, TerminationReason};
 use crate::environment::{Environment, Space};
 use crate::policy::{Policy, PolicyObjective, TabularPolicy};
-use ndarray::{Array2, Zip};
+use ndarray::{Array2, Axis};
 
 pub struct MonteCarlo {
     // number of episodes
@@ -12,6 +12,10 @@ pub struct MonteCarlo {
     epsilon: f64,
 }
 
+/// Monte Carlo ε-greedy
+///
+/// Rollouts are on-policy but the policy is ε-soft.
+/// Each episode contributes to the q-value estimate of each state-action pair it visits.
 impl MonteCarlo {
     pub fn new(episodes: u64, episode_length: u64, epsilon: f64) -> Self {
         Self {
@@ -36,8 +40,6 @@ impl ModelFreeSolver for MonteCarlo {
             return Err("Monte Carlo requires a discrete action space".into());
         };
 
-        // rewards for each state
-        let mut r_sa = Array2::<f64>::zeros((n_s, n_a));
         // visits for each state
         let mut n_sa = Array2::<u64>::zeros((n_s, n_a));
         // state-action values placeholder
@@ -63,32 +65,24 @@ impl ModelFreeSolver for MonteCarlo {
                 .collect::<Vec<_>>();
 
             // update state-action rewards and counts from episode
-            let mut g_episode = 0.0f64;
-            for (s, a, r) in episode.iter().rev() {
-                g_episode = gamma * g_episode + r;
-                r_sa[[*s, *a]] += g_episode;
-                n_sa[[*s, *a]] += 1;
-            }
+            let returns = episode.into_iter().rev().scan(0.0, |g, (s, a, r)| {
+                *g = r + gamma * *g;
+                Some((s, a, *g))
+            });
+            for (s, a, g) in returns {
+                let visits = &mut n_sa[[s, a]];
+                *visits += 1;
 
-            // estimated action values
-            q_sa = Zip::from(&r_sa)
-                .and(&n_sa)
-                .map_collect(|&returns, &visits| {
-                    if visits == 0 {
-                        0.0
-                    } else {
-                        returns / visits as f64
-                    }
-                });
+                let estimate = &mut q_sa[[s, a]];
+                *estimate += (g - *estimate) / *visits as f64;
+            }
 
             // policy improvement
             pi = TabularPolicy::from_q(&q_sa, PolicyObjective::SoftDeterministic(self.epsilon))?;
         }
 
         // value under the final epsilon-soft policy
-        let value = (0..n_s)
-            .map(|s| (0..n_a).map(|a| pi.probability(s, a) * q_sa[[s, a]]).sum())
-            .collect();
+        let value = (&pi.probabilities() * &q_sa).sum_axis(Axis(1)).to_vec();
 
         Ok(SolveResult {
             policy: pi,

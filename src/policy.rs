@@ -1,5 +1,5 @@
 use crate::environment::Space;
-use ndarray::{Array2, ArrayView1, Axis};
+use ndarray::{Array2, ArrayView1, ArrayView2, Axis};
 
 /// A policy maps states to action probabilities.
 pub trait Policy {
@@ -120,6 +120,10 @@ impl TabularPolicy {
 
     pub fn probability(&self, state: usize, action: usize) -> f64 {
         self.probabilities[[state, action]]
+    }
+
+    pub fn probabilities(&self) -> ArrayView2<'_, f64> {
+        self.probabilities.view()
     }
 
     pub fn state_probabilities(&self, state: usize) -> ArrayView1<'_, f64> {
