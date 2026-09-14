@@ -1,18 +1,19 @@
 use crate::environment::Environment;
 use crate::model::TabularModel;
+use crate::policy::DiscretePolicy;
 
 pub mod dqn;
 pub mod monte_carlo;
 pub mod policy_iteration;
 pub mod td;
 
-pub use dqn::DeepQLearning;
+pub use dqn::{DeepQLearning, DqnSnapshot, TargetUpdate};
 pub use monte_carlo::MonteCarlo;
 pub use policy_iteration::{StoppingCriterion, TruncatedPolicyIteration};
 pub use td::TD;
 
 pub struct SolveResult<Observation, Output> {
-    pub policy: Box<dyn crate::policy::DiscretePolicy<Observation = Observation>>,
+    pub policy: Box<dyn DiscretePolicy<Observation = Observation>>,
     pub output: Output,
     pub status: SolveStatus,
 }

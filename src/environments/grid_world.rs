@@ -107,7 +107,7 @@ pub fn grid_world_impl(spec: GridWorldSpec) -> Result<TabularModel, String> {
 
     let features = Array2::from_shape_fn((n_s, 2), |(s, i)| -> f64 {
         let (row, col) = idx_to_coords(s, n);
-        [row as f64, col as f64][i]
+        [row as f64, col as f64][i] / (n - 1) as f64
     });
 
     let initial_distribution: Distribution<usize> = match spec.initial_distribution {

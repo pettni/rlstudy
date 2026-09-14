@@ -6,7 +6,9 @@ use self::systems::{SelectedSystem, build_system};
 use clap::{Parser, Subcommand};
 use ndarray::Array1;
 use rand::{SeedableRng, rngs::StdRng};
-use rlstudy::algorithms::{ModelBasedSolver, ModelFreeSolver, SolveResult, TabularSolveResult};
+use rlstudy::algorithms::{
+    DqnSnapshot, ModelBasedSolver, ModelFreeSolver, SolveResult, TabularSolveResult,
+};
 use rlstudy::environment::{FeatureEnvironment, TabularEnvironment};
 use serde::Serialize;
 use std::fs::File;
@@ -153,7 +155,7 @@ fn run_solver(
 
 enum SelectedResult {
     Tabular(TabularSolveResult),
-    DQN(SolveResult<Array1<f64>, ()>),
+    DQN(SolveResult<Array1<f64>, Vec<DqnSnapshot>>),
 }
 
 #[derive(Serialize)]
@@ -164,6 +166,8 @@ struct VisualizationResult<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     state_values: Option<&'a [f64]>,
     policy_actions: Vec<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    training: Option<&'a [DqnSnapshot]>,
 }
 
 fn write_json_result(
@@ -181,12 +185,13 @@ fn write_json_result(
         path => path,
     };
 
-    let (state_values, policy_actions) = match result {
+    let (state_values, policy_actions, training) = match result {
         SelectedResult::Tabular(result) => (
             Some(result.output.as_slice()),
             (0..result.output.len())
                 .map(|state| result.policy.greedy_action(&state))
                 .collect(),
+            None,
         ),
         SelectedResult::DQN(result) => (
             None,
@@ -199,6 +204,7 @@ fn write_json_result(
                     result.policy.greedy_action(&observation)
                 })
                 .collect(),
+            Some(result.output.as_slice()),
         ),
     };
 
@@ -210,6 +216,7 @@ fn write_json_result(
             gamma,
             state_values,
             policy_actions,
+            training,
         },
     )?;
     println!();
@@ -242,6 +249,15 @@ fn print_result(system: &str, solver: &Solver, result: SelectedResult, gamma: f6
         SelectedResult::DQN(result) => {
             println!("iterations={}", result.status.iterations());
             println!("status={:?}", result.status);
+            for snapshot in result.output {
+                println!(
+                    "iteration={} learning_rate={:.6} average_loss={:.6} evaluation_reward={:.6}",
+                    snapshot.iteration,
+                    snapshot.learning_rate,
+                    snapshot.average_loss,
+                    snapshot.evaluation_reward
+                );
+            }
         }
     }
 }

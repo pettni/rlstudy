@@ -1,0 +1,11 @@
+learning_rate: 0.05
+final_learning_rate: 0.001
+batch_size: 1024
+replay_capacity: 10000
+iterations: 5000
+target_update: soft
+target_update_rate: 0.005
+hidden_dims: 100
+evaluation_interval: 50
+evaluation_episodes: 10
+evaluation_max_steps: 1000

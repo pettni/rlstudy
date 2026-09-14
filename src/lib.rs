@@ -1,6 +1,7 @@
 pub mod algorithms;
 pub mod environment;
 pub mod environments;
+pub mod evaluation;
 pub mod model;
 pub mod network;
 pub mod policy;
