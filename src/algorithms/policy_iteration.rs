@@ -1,8 +1,41 @@
-use crate::algorithms::{ModelBasedSolver, SolveResult, SolveStatus, SolveTrace, ValueSnapshot};
+use crate::algorithms::{ModelBasedSolver, SolveResult, SolveStatus, SolverSnapshot};
 use crate::model::TabularModel;
 use crate::policy::TabularPolicy;
+use clap::Args;
 use ndarray::{Array1, Array2, Array3};
 use num_traits::abs;
+use serde::Deserialize;
+
+#[derive(Debug, Clone, PartialEq, Args, Deserialize, Default)]
+#[serde(default, deny_unknown_fields)]
+pub struct ValueIterationConfig {
+    #[arg(long)]
+    pub tolerance: Option<f64>,
+    #[arg(long)]
+    pub max_iterations: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Args, Deserialize, Default)]
+#[serde(default, deny_unknown_fields)]
+pub struct PolicyIterationConfig {
+    #[arg(long)]
+    pub tolerance: Option<f64>,
+    #[arg(long)]
+    pub max_iterations: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Args, Deserialize, Default)]
+#[serde(default, deny_unknown_fields)]
+pub struct TruncatedPolicyIterationConfig {
+    #[arg(long)]
+    pub outer_tolerance: Option<f64>,
+    #[arg(long)]
+    pub outer_max_iterations: Option<usize>,
+    #[arg(long)]
+    pub inner_tolerance: Option<f64>,
+    #[arg(long)]
+    pub inner_max_iterations: Option<usize>,
+}
 
 pub struct StoppingCriterion {
     tolerance: Option<f64>,
@@ -62,55 +95,53 @@ pub struct TruncatedPolicyIteration {
     inner: StoppingCriterion,
 }
 
-struct TraceRecorder {
-    evaluation_sweep: usize,
-    snapshots: Vec<ValueSnapshot>,
-}
-
-impl TraceRecorder {
-    fn record(&mut self, policy_iteration: usize, value: &Array1<f64>) {
-        self.evaluation_sweep += 1;
-        self.snapshots.push(ValueSnapshot {
-            policy_iteration,
-            evaluation_sweep: self.evaluation_sweep,
-            value: value.to_vec(),
-        });
-    }
-}
-
 impl TruncatedPolicyIteration {
-    pub fn new(outer: StoppingCriterion, inner: StoppingCriterion) -> Self {
+    pub fn new(config: TruncatedPolicyIterationConfig) -> Result<Self, String> {
+        Ok(Self::with_stopping_criteria(
+            stopping_criterion(config.outer_tolerance, config.outer_max_iterations)?,
+            stopping_criterion(config.inner_tolerance, config.inner_max_iterations)?,
+        ))
+    }
+
+    pub fn with_stopping_criteria(outer: StoppingCriterion, inner: StoppingCriterion) -> Self {
         Self { outer, inner }
     }
 
-    pub fn value_iteration(stopping: StoppingCriterion) -> Self {
-        Self {
-            outer: stopping,
+    pub fn value_iteration(config: ValueIterationConfig) -> Result<Self, String> {
+        Ok(Self {
+            outer: stopping_criterion(config.tolerance, config.max_iterations)?,
             inner: StoppingCriterion::iterations(1).unwrap(),
-        }
+        })
     }
 
-    pub fn policy_iteration(stopping: StoppingCriterion) -> Self {
-        Self {
-            outer: stopping,
+    pub fn policy_iteration(config: PolicyIterationConfig) -> Result<Self, String> {
+        Ok(Self {
+            outer: stopping_criterion(config.tolerance, config.max_iterations)?,
             inner: StoppingCriterion::convergence(1e-6, 10_000).unwrap(),
-        }
+        })
     }
+}
 
-    pub fn solve_with_trace(&self, model: &TabularModel, gamma: f64) -> Result<SolveTrace, String> {
+impl ModelBasedSolver for TruncatedPolicyIteration {
+    type Observation = usize;
+
+    fn solve(
+        &self,
+        model: &TabularModel,
+        gamma: f64,
+    ) -> Result<crate::algorithms::TabularSolveResult, String> {
         if !gamma.is_finite() || !(0.0..1.0).contains(&gamma) {
             return Err("gamma must be finite and in [0, 1)".into());
         }
         let n_s = model.states().len();
         let n_a = model.actions().len();
-        let mut trace = TraceRecorder {
-            evaluation_sweep: 0,
-            snapshots: vec![ValueSnapshot {
-                policy_iteration: 0,
-                evaluation_sweep: 0,
-                value: vec![0.0; n_s],
-            }],
-        };
+        let mut snapshots = vec![
+            SolverSnapshot::new(0)
+                .policy_iteration(0)
+                .evaluation_sweep(0)
+                .state_values(vec![0.0; n_s])
+                .state_value(0.0),
+        ];
 
         let mut pi = TabularPolicy::uniform(n_s, n_a).expect("model has states and actions");
         let mut v_pi = policy_evaluation(
@@ -120,26 +151,30 @@ impl TruncatedPolicyIteration {
             gamma,
             &self.inner,
             0,
-            &mut trace,
+            &mut snapshots,
         );
 
         for iter in 1.. {
             let new_pi = improve_policy(model, &v_pi, gamma);
-            let new_v_pi =
-                policy_evaluation(model, &new_pi, &v_pi, gamma, &self.inner, iter, &mut trace);
+            let new_v_pi = policy_evaluation(
+                model,
+                &new_pi,
+                &v_pi,
+                gamma,
+                &self.inner,
+                iter,
+                &mut snapshots,
+            );
             let status = self.outer.stop_reason(iter, &v_pi, &new_v_pi);
 
             pi = new_pi;
             v_pi = new_v_pi;
 
             if let Some(status) = status {
-                return Ok(SolveTrace {
-                    result: SolveResult {
-                        policy: Box::new(pi),
-                        output: v_pi.to_vec(),
-                        status,
-                    },
-                    snapshots: trace.snapshots,
+                return Ok(SolveResult {
+                    policy: Box::new(pi),
+                    snapshots,
+                    status,
                 });
             }
         }
@@ -148,16 +183,17 @@ impl TruncatedPolicyIteration {
     }
 }
 
-impl ModelBasedSolver for TruncatedPolicyIteration {
-    type Observation = usize;
-    type Output = Vec<f64>;
-
-    fn solve(
-        &self,
-        model: &TabularModel,
-        gamma: f64,
-    ) -> Result<crate::algorithms::TabularSolveResult, String> {
-        Ok(self.solve_with_trace(model, gamma)?.result)
+fn stopping_criterion(
+    tolerance: Option<f64>,
+    max_iterations: Option<usize>,
+) -> Result<StoppingCriterion, String> {
+    match (tolerance, max_iterations) {
+        (Some(tolerance), Some(iterations)) => {
+            StoppingCriterion::convergence(tolerance, iterations)
+        }
+        (Some(tolerance), None) => StoppingCriterion::convergence(tolerance, 10_000),
+        (None, Some(iterations)) => StoppingCriterion::iterations(iterations),
+        (None, None) => StoppingCriterion::convergence(1e-6, 10_000),
     }
 }
 
@@ -168,7 +204,7 @@ fn policy_evaluation(
     gamma: f64,
     sc: &StoppingCriterion,
     policy_iteration: usize,
-    trace: &mut TraceRecorder,
+    snapshots: &mut Vec<SolverSnapshot>,
 ) -> Array1<f64> {
     // R_pi(s)
     let r_pi_s = policy_reward(model, pi);
@@ -180,7 +216,17 @@ fn policy_evaluation(
     for iter in 1.. {
         // V_pi(s) = r_pi(s) + γ * sum_{s'} P_pi(s,s') v(s')
         let new_v_pi = &r_pi_s + gamma * p_pi_s_s.dot(&v_pi);
-        trace.record(policy_iteration, &new_v_pi);
+        let evaluation_sweep = snapshots.len();
+        let state_value = (0..model.states().len())
+            .map(|state| model.initial_distribution().probability_of(&state) * new_v_pi[state])
+            .sum();
+        snapshots.push(
+            SolverSnapshot::new(evaluation_sweep)
+                .policy_iteration(policy_iteration)
+                .evaluation_sweep(evaluation_sweep)
+                .state_values(new_v_pi.to_vec())
+                .state_value(state_value),
+        );
         if sc.stop_reason(iter, &v_pi, &new_v_pi).is_some() {
             return new_v_pi;
         }

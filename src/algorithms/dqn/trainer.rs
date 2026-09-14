@@ -54,12 +54,14 @@ impl DqnTrainer {
         let mut action_data = Vec::with_capacity(self.batch_size);
         let mut reward_data = Vec::with_capacity(self.batch_size);
         let mut next_state_data = Vec::with_capacity(self.batch_size * self.feature_dim);
+        let mut bootstrap_data = Vec::with_capacity(self.batch_size);
 
         for transition in batch {
             state_data.extend(transition.state.iter().copied());
             action_data.push(transition.action as i64);
             reward_data.push(transition.reward);
             next_state_data.extend(transition.next_state.iter().copied());
+            bootstrap_data.push(if transition.terminated { 0.0 } else { 1.0 });
         }
 
         let states = Tensor::<TrainingBackend, 2>::from_data(
@@ -78,6 +80,10 @@ impl DqnTrainer {
             TensorData::new(next_state_data, [self.batch_size, self.feature_dim]),
             &self.device,
         );
+        let bootstrap = Tensor::<TrainingBackend, 1>::from_data(
+            TensorData::new(bootstrap_data, [self.batch_size]),
+            &self.device,
+        );
 
         let predicted = self
             .online
@@ -85,7 +91,8 @@ impl DqnTrainer {
             .gather(1, actions.reshape([self.batch_size, 1]))
             .squeeze_dim(1);
         let target = rewards
-            + gamma
+            + bootstrap
+                * gamma
                 * self
                     .target
                     .forward(next_states)

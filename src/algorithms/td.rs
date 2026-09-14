@@ -1,7 +1,9 @@
-use crate::algorithms::{ModelFreeSolver, SolveResult, SolveStatus};
-use crate::environment::{Environment, Space};
+use crate::algorithms::{ModelFreeSolver, SolveResult, SolveStatus, SolverSnapshot};
+use crate::environment::{Environment, Space, Step};
 use crate::policy::{Policy, PolicyObjective, TabularPolicy};
+use clap::{Args, ValueEnum};
 use ndarray::{Array2, ArrayView1};
+use serde::Deserialize;
 
 /// TD-family of model-free control algorithm.
 ///
@@ -15,7 +17,8 @@ use ndarray::{Array2, ArrayView1};
 ///     r_{t+1} + gamma * max_a q(s_{t+1}, a)               [Q-learning]
 ///
 
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum TDVariant {
     /// Basic variant
     Sarsa,
@@ -25,120 +28,67 @@ pub enum TDVariant {
     QLearning,
 }
 
+#[derive(Debug, Clone, PartialEq, Args, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct TDConfig {
+    #[arg(long, default_value_t = TDConfig::default().episodes)]
+    pub episodes: u64,
+    #[arg(long, default_value_t = TDConfig::default().episode_length)]
+    pub episode_length: u64,
+    #[arg(long, default_value_t = TDConfig::default().epsilon)]
+    pub epsilon: f64,
+    #[arg(long, default_value_t = TDConfig::default().alpha)]
+    pub alpha: f64,
+    #[arg(long, value_enum, default_value_t = TDConfig::default().variant)]
+    pub variant: TDVariant,
+}
+
+impl Default for TDConfig {
+    fn default() -> Self {
+        Self {
+            episodes: 10_000,
+            episode_length: 30,
+            epsilon: 0.1,
+            alpha: 0.1,
+            variant: TDVariant::Sarsa,
+        }
+    }
+}
+
 pub struct TD {
-    // number of episodes
-    episodes: u64,
-    // episode length
-    episode_length: u64,
-    // soft action TODO: Support an epsilon schedule that decreases across episodes.
-    epsilon: f64,
-    // learning rate
-    alpha: f64,
-    // algorithm type
-    variant: TDVariant,
+    config: TDConfig,
     // base policy for off-policy learning (if any)
     behavior_policy: Option<TabularPolicy>,
 }
 
 impl TD {
-    pub fn new(
-        episodes: u64,
-        episode_length: u64,
-        epsilon: f64,
-        alpha: f64,
-    ) -> Result<Self, String> {
-        Self::with_variant(
-            episodes,
-            episode_length,
-            epsilon,
-            alpha,
-            TDVariant::Sarsa,
-            None,
-        )
-    }
-
-    pub fn expected(
-        episodes: u64,
-        episode_length: u64,
-        epsilon: f64,
-        alpha: f64,
-    ) -> Result<Self, String> {
-        Self::with_variant(
-            episodes,
-            episode_length,
-            epsilon,
-            alpha,
-            TDVariant::ExpectedSarsa,
-            None,
-        )
-    }
-
-    pub fn q_learning(
-        episodes: u64,
-        episode_length: u64,
-        epsilon: f64,
-        alpha: f64,
-    ) -> Result<Self, String> {
-        Self::with_variant(
-            episodes,
-            episode_length,
-            epsilon,
-            alpha,
-            TDVariant::QLearning,
-            None,
-        )
-    }
-
-    pub fn q_learning_off_policy(
-        episodes: u64,
-        episode_length: u64,
-        alpha: f64,
-        behavior_policy: TabularPolicy,
-    ) -> Result<Self, String> {
-        Self::with_variant(
-            episodes,
-            episode_length,
-            0.,
-            alpha,
-            TDVariant::QLearning,
-            Some(behavior_policy),
-        )
-    }
-
-    fn with_variant(
-        episodes: u64,
-        episode_length: u64,
-        epsilon: f64,
-        alpha: f64,
-        variant: TDVariant,
-        behavior_policy: Option<TabularPolicy>,
-    ) -> Result<Self, String> {
-        if episodes == 0 {
+    pub fn new(config: TDConfig) -> Result<Self, String> {
+        if config.episodes == 0 {
             return Err("episodes must be positive".into());
         }
-        if episode_length == 0 {
+        if config.episode_length == 0 {
             return Err("episode length must be positive".into());
         }
-        if !epsilon.is_finite() || !(0.0..=1.0).contains(&epsilon) {
+        if !config.epsilon.is_finite() || !(0.0..=1.0).contains(&config.epsilon) {
             return Err("epsilon must be finite and in [0, 1]".into());
         }
-        if !alpha.is_finite() || alpha <= 0.0 || alpha > 1.0 {
+        if !config.alpha.is_finite() || config.alpha <= 0.0 || config.alpha > 1.0 {
             return Err("alpha must be finite and in (0, 1]".into());
         }
         Ok(Self {
-            episodes,
-            episode_length,
-            epsilon,
-            alpha,
-            variant,
-            behavior_policy,
+            config,
+            behavior_policy: None,
         })
+    }
+
+    pub fn with_behavior_policy(mut self, policy: TabularPolicy) -> Self {
+        self.behavior_policy = Some(policy);
+        self
     }
 }
 
 impl ModelFreeSolver for TD {
     type Observation = usize;
-    type Output = Vec<f64>;
 
     fn solve(
         &self,
@@ -159,7 +109,7 @@ impl ModelFreeSolver for TD {
         let mut q_sa = Array2::<f64>::zeros((n_s, n_a));
         let mut pi_target = TabularPolicy::uniform(n_s, n_a).unwrap();
 
-        for _e in 0..self.episodes {
+        for _e in 0..self.config.episodes {
             let mut st = env.reset(rng);
             let mut at = self
                 .behavior_policy
@@ -167,34 +117,47 @@ impl ModelFreeSolver for TD {
                 .unwrap_or(&pi_target)
                 .sample_action(&st, rng);
 
-            for _ in 0..self.episode_length {
-                let (stp, rt) = env.step(at, rng);
+            for _ in 0..self.config.episode_length {
+                let Step {
+                    observation: stp,
+                    reward: rt,
+                    terminated,
+                    truncated,
+                } = env.step(at, rng);
 
                 // value update
-                let (q_next, atp) = match self.variant {
-                    TDVariant::Sarsa => {
-                        let atp = self
-                            .behavior_policy
-                            .as_ref()
-                            .unwrap_or(&pi_target)
-                            .sample_action(&stp, rng);
-                        (q_sa[[stp, atp]], Some(atp))
+                let (q_next, atp) = if terminated {
+                    (0.0, None)
+                } else {
+                    match self.config.variant {
+                        TDVariant::Sarsa => {
+                            let atp = self
+                                .behavior_policy
+                                .as_ref()
+                                .unwrap_or(&pi_target)
+                                .sample_action(&stp, rng);
+                            (q_sa[[stp, atp]], Some(atp))
+                        }
+                        TDVariant::ExpectedSarsa => {
+                            let p_a = pi_target.state_probabilities(stp);
+                            (q_sa.row(stp).dot(&p_a), None)
+                        }
+                        TDVariant::QLearning => (max_q(q_sa.row(stp)), None),
                     }
-                    TDVariant::ExpectedSarsa => {
-                        let p_a = pi_target.state_probabilities(stp);
-                        (q_sa.row(stp).dot(&p_a), None)
-                    }
-                    TDVariant::QLearning => (max_q(q_sa.row(stp)), None),
                 };
                 let td_target = rt + gamma * q_next;
-                q_sa[[st, at]] -= self.alpha * (q_sa[[st, at]] - td_target);
+                q_sa[[st, at]] -= self.config.alpha * (q_sa[[st, at]] - td_target);
 
                 // policy improvement at st
                 pi_target.update_at(
                     st,
                     &q_sa.row(st),
-                    PolicyObjective::SoftDeterministic(self.epsilon),
+                    PolicyObjective::SoftDeterministic(self.config.epsilon),
                 );
+
+                if terminated || truncated {
+                    break;
+                }
 
                 st = stp;
                 at = match atp {
@@ -208,7 +171,7 @@ impl ModelFreeSolver for TD {
             }
         }
 
-        let (policy, value) = match self.variant {
+        let (policy, value) = match self.config.variant {
             TDVariant::QLearning => {
                 let value = (0..n_s).map(|s| max_q(q_sa.row(s))).collect();
                 let policy = TabularPolicy::from_q(&q_sa, PolicyObjective::Deterministic)?;
@@ -225,16 +188,16 @@ impl ModelFreeSolver for TD {
                 (pi_target, value)
             }
         };
+        let iterations = self
+            .config
+            .episodes
+            .try_into()
+            .map_err(|_| "episode count does not fit usize")?;
 
         Ok(SolveResult {
             policy: Box::new(policy),
-            output: value,
-            status: SolveStatus::IterationLimit {
-                iterations: self
-                    .episodes
-                    .try_into()
-                    .map_err(|_| "episode count does not fit usize")?,
-            },
+            snapshots: vec![SolverSnapshot::new(iterations).state_values(value)],
+            status: SolveStatus::IterationLimit { iterations },
         })
     }
 }
@@ -252,13 +215,18 @@ mod tests {
 
     #[test]
     fn configuration_is_validated() {
-        assert!(TD::new(0, 10, 0.1, 0.1).is_err());
-        assert!(TD::new(10, 0, 0.1, 0.1).is_err());
-        assert!(TD::new(10, 10, -0.1, 0.1).is_err());
-        assert!(TD::new(10, 10, 0.1, 0.0).is_err());
-        assert!(TD::new(10, 10, 0.1, 1.1).is_err());
-        assert!(TD::new(10, 10, 0.1, 0.1).is_ok());
-        assert!(TD::expected(10, 10, 0.1, 0.1).is_ok());
-        assert!(TD::q_learning(10, 10, 0.1, 0.1).is_ok());
+        let invalid = |episodes, episode_length, epsilon, alpha| TDConfig {
+            episodes,
+            episode_length,
+            epsilon,
+            alpha,
+            ..TDConfig::default()
+        };
+        assert!(TD::new(invalid(0, 10, 0.1, 0.1)).is_err());
+        assert!(TD::new(invalid(10, 0, 0.1, 0.1)).is_err());
+        assert!(TD::new(invalid(10, 10, -0.1, 0.1)).is_err());
+        assert!(TD::new(invalid(10, 10, 0.1, 0.0)).is_err());
+        assert!(TD::new(invalid(10, 10, 0.1, 1.1)).is_err());
+        assert!(TD::new(TDConfig::default()).is_ok());
     }
 }

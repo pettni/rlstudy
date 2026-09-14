@@ -1,63 +1,91 @@
-use std::path::PathBuf;
-
+use crate::environment::{Environment, Space, Step};
+use ndarray::Array1;
 use pyo3::prelude::*;
-use pyo3::types::{PyList, PyModule};
+use pyo3::types::{PyDict, PyTuple};
+use rand::RngExt;
 
-pub struct GymEnv {
+pub struct GymEnvironment {
     env: Py<PyAny>,
+    observation_space: Space,
+    action_space: Space,
 }
 
-impl GymEnv {
-    pub fn new() -> PyResult<Self> {
+impl GymEnvironment {
+    pub fn new(id: &str) -> PyResult<Self> {
         Python::attach(|py| {
-            let python_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("python");
-            let sys = PyModule::import(py, "sys")?;
+            let env = PyModule::import(py, "gymnasium")?
+                .call_method1("make", (id,))?
+                .unbind();
+            let bound = env.bind(py);
+            let observation_space = bound.getattr("observation_space")?;
+            let action_space = bound.getattr("action_space")?;
 
-            sys.getattr("path")?
-                .cast_into::<PyList>()?
-                .insert(0, python_dir.to_string_lossy().as_ref())?;
+            let low = extract_vector(&observation_space.getattr("low")?)?;
+            let high = extract_vector(&observation_space.getattr("high")?)?;
+            let num_actions = action_space.getattr("n")?.extract()?;
 
-            let module = PyModule::import(py, "gym_bridge")?;
-
-            let env = module.getattr("GymBridge")?.call0()?.unbind();
-
-            Ok(Self { env })
+            Ok(Self {
+                env,
+                observation_space: Space::Continuous { low, high },
+                action_space: Space::Discrete { size: num_actions },
+            })
         })
     }
 
-    pub fn reset(&self, seed: u64) -> PyResult<[f32; 4]> {
+    fn reset_with_seed(&mut self, seed: u64) -> PyResult<Array1<f64>> {
         Python::attach(|py| {
-            let observation: Vec<f32> = self
-                .env
-                .bind(py)
-                .call_method1("reset", (seed,))?
-                .extract()?;
-
-            Ok(observation.try_into().expect("Observation must extract"))
+            let kwargs = PyDict::new(py);
+            kwargs.set_item("seed", seed)?;
+            let result = self.env.bind(py).call_method("reset", (), Some(&kwargs))?;
+            let tuple = result.cast_into::<PyTuple>()?;
+            extract_vector(&tuple.get_item(0)?)
         })
     }
 
-    pub fn step(&self, action: usize) -> PyResult<([f32; 4], f32, bool, bool)> {
+    fn try_step(&mut self, action: usize) -> PyResult<Step<Array1<f64>>> {
         Python::attach(|py| {
-            let (observation, reward, terminated, truncated): (Vec<f32>, f32, bool, bool) = self
-                .env
-                .bind(py)
-                .call_method1("step", (action,))?
-                .extract()?;
-
-            Ok((
-                observation.try_into().expect("Observation must extract"),
-                reward,
-                terminated,
-                truncated,
-            ))
+            let result = self.env.bind(py).call_method1("step", (action,))?;
+            let tuple = result.cast_into::<PyTuple>()?;
+            Ok(Step {
+                observation: extract_vector(&tuple.get_item(0)?)?,
+                reward: tuple.get_item(1)?.extract()?,
+                terminated: tuple.get_item(2)?.extract()?,
+                truncated: tuple.get_item(3)?.extract()?,
+            })
         })
     }
+}
 
-    pub fn close(&self) -> PyResult<()> {
-        Python::attach(|py| {
-            self.env.bind(py).call_method0("close")?;
-            Ok(())
-        })
+impl Environment for GymEnvironment {
+    type Observation = Array1<f64>;
+    type Action = usize;
+
+    fn state_space(&self) -> Space {
+        self.observation_space.clone()
     }
+
+    fn action_space(&self) -> Space {
+        self.action_space.clone()
+    }
+
+    fn reset(&mut self, rng: &mut dyn rand::Rng) -> Array1<f64> {
+        self.reset_with_seed(rng.random())
+            .expect("Gymnasium reset failed")
+    }
+
+    fn step(&mut self, action: usize, _rng: &mut dyn rand::Rng) -> Step<Array1<f64>> {
+        self.try_step(action).expect("Gymnasium step failed")
+    }
+}
+
+impl Drop for GymEnvironment {
+    fn drop(&mut self) {
+        Python::attach(|py| {
+            let _ = self.env.bind(py).call_method0("close");
+        });
+    }
+}
+
+fn extract_vector(value: &Bound<'_, PyAny>) -> PyResult<Array1<f64>> {
+    Ok(Array1::from_vec(value.call_method0("tolist")?.extract()?))
 }

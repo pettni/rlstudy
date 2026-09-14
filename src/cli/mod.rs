@@ -7,12 +7,10 @@ use clap::{Parser, Subcommand};
 use ndarray::Array1;
 use rand::{SeedableRng, rngs::StdRng};
 use rlstudy::algorithms::{
-    DqnSnapshot, ModelBasedSolver, ModelFreeSolver, SolveResult, TabularSolveResult,
+    ModelBasedSolver, ModelFreeSolver, SolveResult, SolverSnapshot, TabularSolveResult,
 };
 use rlstudy::environment::{FeatureEnvironment, TabularEnvironment};
 use serde::Serialize;
-use std::fs::File;
-use std::io::{BufWriter, Write};
 use std::path::PathBuf;
 
 #[derive(Parser)]
@@ -26,15 +24,21 @@ struct Args {
 enum Commands {
     /// Run a solver against a system.
     Solve(SolveArgs),
-    /// Write solver value snapshots as CSV.
-    Trace(TraceArgs),
 }
 
 #[derive(Parser)]
 struct SolveArgs {
-    /// Built-in system name or path to a grid-world YAML file.
-    #[arg(short, long, default_value = "gridworld")]
-    system: String,
+    /// Grid-world YAML file. Omit both system options for the built-in grid world.
+    #[arg(long, conflicts_with = "gym")]
+    grid_world: Option<PathBuf>,
+
+    /// Gymnasium environment ID.
+    #[arg(long, conflicts_with = "grid_world")]
+    gym: Option<String>,
+
+    /// Load the selected solver's configuration from YAML.
+    #[arg(long)]
+    config: Option<PathBuf>,
 
     #[command(subcommand)]
     solver: Solver,
@@ -47,59 +51,22 @@ struct SolveArgs {
     json: bool,
 }
 
-#[derive(Parser)]
-struct TraceArgs {
-    #[command(flatten)]
-    solve: SolveArgs,
-
-    #[arg(short, long)]
-    output: PathBuf,
-}
-
 pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
     match Args::parse().command {
         Commands::Solve(args) => solve(&args),
-        Commands::Trace(args) => trace(&args),
     }
-}
-
-fn trace(args: &TraceArgs) -> Result<(), Box<dyn std::error::Error>> {
-    let system = build_system(&args.solve.system)?;
-    let solver = build_solver(&args.solve.solver, system.num_actions())?;
-    let model = system.as_model().ok_or("tracing requires a model system")?;
-    let SelectedSolver::ModelBased(solver) = solver else {
-        return Err("tracing requires a model-based solver".into());
-    };
-    let trace = solver.solve_with_trace(model, args.solve.gamma)?;
-    let name = args.solve.solver.name();
-    let mut output = BufWriter::new(File::create(&args.output)?);
-
-    writeln!(
-        output,
-        "solver,policy_iteration,evaluation_sweep,state,value"
-    )?;
-    for snapshot in trace.snapshots {
-        for (state, value) in snapshot.value.into_iter().enumerate() {
-            writeln!(
-                output,
-                "{},{},{},{},{}",
-                name, snapshot.policy_iteration, snapshot.evaluation_sweep, state, value
-            )?;
-        }
-    }
-    Ok(())
 }
 
 fn solve(args: &SolveArgs) -> Result<(), Box<dyn std::error::Error>> {
-    let mut system = build_system(&args.system)?;
-    let solver = build_solver(&args.solver, system.num_actions())?;
+    let mut system = build_system(args.grid_world.as_deref(), args.gym.as_deref())?;
+    let solver = build_solver(&args.solver, args.config.as_deref())?;
     let mut rng = StdRng::seed_from_u64(0);
     let result = run_solver(solver, &mut system, args.gamma, &mut rng)?;
 
     if args.json {
-        write_json_result(&args.system, &args.solver, &system, &result, args.gamma)?;
+        write_json_result(args, &system, &result)?;
     } else {
-        print_result(&args.system, &args.solver, result, args.gamma);
+        print_result(args, result);
     }
     Ok(())
 }
@@ -122,9 +89,7 @@ fn run_solver(
                 SelectedSystem::Model(model) => {
                     solver.solve(&mut TabularEnvironment::new(model)?, gamma, rng)
                 }
-                SelectedSystem::BlackBox(environment) => {
-                    solver.solve(environment.as_mut(), gamma, rng)
-                }
+                SelectedSystem::Gym(_) => return Err("Monte Carlo requires tabular states".into()),
             };
             Ok(SelectedResult::Tabular(result?))
         }
@@ -133,78 +98,76 @@ fn run_solver(
                 SelectedSystem::Model(model) => {
                     solver.solve(&mut TabularEnvironment::new(model)?, gamma, rng)
                 }
-                SelectedSystem::BlackBox(environment) => {
-                    solver.solve(environment.as_mut(), gamma, rng)
-                }
+                SelectedSystem::Gym(_) => return Err("TD requires tabular states".into()),
             };
             Ok(SelectedResult::Tabular(result?))
         }
         SelectedSolver::DQN(solver) => {
-            let model = system
-                .as_model()
-                .ok_or("DQN requires a model with state features")?;
-            let mut environment = FeatureEnvironment::new(model)?;
-            Ok(SelectedResult::DQN(solver.solve(
-                &mut environment,
-                gamma,
-                rng,
-            )?))
+            let result = match system {
+                SelectedSystem::Model(model) => {
+                    solver.solve(&mut FeatureEnvironment::new(model)?, gamma, rng)
+                }
+                SelectedSystem::Gym(environment) => solver.solve(environment, gamma, rng),
+            };
+            Ok(SelectedResult::DQN(result?))
         }
     }
 }
 
 enum SelectedResult {
     Tabular(TabularSolveResult),
-    DQN(SolveResult<Array1<f64>, Vec<DqnSnapshot>>),
+    DQN(SolveResult<Array1<f64>>),
 }
 
 #[derive(Serialize)]
 struct VisualizationResult<'a> {
-    grid_world_definition: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    grid_world_definition: Option<&'a str>,
     solver: &'a str,
     gamma: f64,
     #[serde(skip_serializing_if = "Option::is_none")]
-    state_values: Option<&'a [f64]>,
-    policy_actions: Vec<usize>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    training: Option<&'a [DqnSnapshot]>,
+    policy_actions: Option<Vec<usize>>,
+    snapshots: &'a [SolverSnapshot],
 }
 
 fn write_json_result(
-    system_name: &str,
-    solver: &Solver,
+    args: &SolveArgs,
     system: &SelectedSystem,
     result: &SelectedResult,
-    gamma: f64,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let model = system
-        .as_model()
-        .ok_or("JSON output requires a grid-world model")?;
-    let grid_world_definition = match system_name {
-        "gridworld" => "grid_worlds/zhao_3x3.yaml",
-        path => path,
-    };
+    let model = system.as_model();
+    let grid_world_definition = args
+        .grid_world
+        .as_deref()
+        .and_then(|path| path.to_str())
+        .or_else(|| model.map(|_| "grid_worlds/zhao_3x3.yaml"));
 
-    let (state_values, policy_actions, training) = match result {
+    let (snapshots, policy_actions) = match result {
         SelectedResult::Tabular(result) => (
-            Some(result.output.as_slice()),
-            (0..result.output.len())
-                .map(|state| result.policy.greedy_action(&state))
-                .collect(),
-            None,
+            result.snapshots.as_slice(),
+            Some(
+                (0..result
+                    .snapshots
+                    .last()
+                    .and_then(|snapshot| snapshot.state_values.as_ref())
+                    .map_or(0, Vec::len))
+                    .map(|state| result.policy.greedy_action(&state))
+                    .collect(),
+            ),
         ),
         SelectedResult::DQN(result) => (
-            None,
-            (0..model.states().len())
-                .map(|state| {
-                    let observation = model
-                        .state_features(state)
-                        .expect("DQN requires model state features")
-                        .to_owned();
-                    result.policy.greedy_action(&observation)
-                })
-                .collect(),
-            Some(result.output.as_slice()),
+            result.snapshots.as_slice(),
+            model.map(|model| {
+                (0..model.states().len())
+                    .map(|state| {
+                        let observation = model
+                            .state_features(state)
+                            .expect("DQN requires model state features")
+                            .to_owned();
+                        result.policy.greedy_action(&observation)
+                    })
+                    .collect()
+            }),
         ),
     };
 
@@ -212,52 +175,151 @@ fn write_json_result(
         std::io::stdout(),
         &VisualizationResult {
             grid_world_definition,
-            solver: solver.name(),
-            gamma,
-            state_values,
+            solver: args.solver.name(),
+            gamma: args.gamma,
             policy_actions,
-            training,
+            snapshots,
         },
     )?;
     println!();
     Ok(())
 }
 
-fn print_result(system: &str, solver: &Solver, result: SelectedResult, gamma: f64) {
+fn print_result(args: &SolveArgs, result: SelectedResult) {
+    let system = args
+        .gym
+        .as_deref()
+        .or_else(|| args.grid_world.as_deref().and_then(|path| path.to_str()))
+        .unwrap_or("gridworld");
     println!(
         "system={} solver={} gamma={:.3}",
         system,
-        solver.name(),
-        gamma
+        args.solver.name(),
+        args.gamma
     );
     match result {
         SelectedResult::Tabular(result) => {
-            if let Some(v0) = result.output.first() {
+            let values = result
+                .snapshots
+                .last()
+                .and_then(|snapshot| snapshot.state_values.as_ref())
+                .expect("tabular solvers return final state values");
+            if let Some(v0) = values.first() {
                 println!("value[0]={:.4}", v0);
             }
             println!("iterations={}", result.status.iterations());
             println!("status={:?}", result.status);
             println!("policy:");
-            for s in 0..result.output.len() {
+            for s in 0..values.len() {
                 let action = result.policy.greedy_action(&s);
                 println!(
                     "  state {} [value {:.3}] -> action {}",
-                    s, result.output[s], action
+                    s, values[s], action
                 );
             }
+            print_snapshots(&result.snapshots);
         }
         SelectedResult::DQN(result) => {
             println!("iterations={}", result.status.iterations());
             println!("status={:?}", result.status);
-            for snapshot in result.output {
-                println!(
-                    "iteration={} learning_rate={:.6} average_loss={:.6} evaluation_reward={:.6}",
-                    snapshot.iteration,
-                    snapshot.learning_rate,
-                    snapshot.average_loss,
-                    snapshot.evaluation_reward
-                );
-            }
+            print_snapshots(&result.snapshots);
         }
+    }
+}
+
+fn print_snapshots(snapshots: &[SolverSnapshot]) {
+    for snapshot in snapshots {
+        print!("iteration={}", snapshot.iteration);
+        if let Some(learning_rate) = snapshot.learning_rate {
+            print!(" learning_rate={learning_rate:.6}");
+        }
+        if let Some(average_loss) = snapshot.average_loss {
+            print!(" average_loss={average_loss:.6}");
+        }
+        if let Some(evaluation_return) = snapshot.evaluation_return {
+            print!(" evaluation_return={evaluation_return:.6}");
+        }
+        println!();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rlstudy::algorithms::{
+        DqnConfig, MonteCarloConfig, PolicyIterationConfig, TDConfig,
+        TruncatedPolicyIterationConfig, ValueIterationConfig,
+    };
+
+    fn solver(arguments: &[&str]) -> Solver {
+        let args = std::iter::once("rlstudy")
+            .chain(arguments.iter().copied())
+            .collect::<Vec<_>>();
+        let parsed = Args::try_parse_from(args).unwrap();
+        let Commands::Solve(solve) = parsed.command;
+        solve.solver
+    }
+
+    #[test]
+    fn cli_and_yaml_have_the_same_solver_defaults() {
+        let Solver::VI(cli) = solver(&["solve", "vi"]) else {
+            unreachable!()
+        };
+        assert_eq!(
+            cli,
+            yaml_serde::from_str::<ValueIterationConfig>("{}").unwrap()
+        );
+
+        let Solver::PI(cli) = solver(&["solve", "pi"]) else {
+            unreachable!()
+        };
+        assert_eq!(
+            cli,
+            yaml_serde::from_str::<PolicyIterationConfig>("{}").unwrap()
+        );
+
+        let Solver::TPI(cli) = solver(&["solve", "tpi"]) else {
+            unreachable!()
+        };
+        assert_eq!(
+            cli,
+            yaml_serde::from_str::<TruncatedPolicyIterationConfig>("{}").unwrap()
+        );
+
+        let Solver::MC(cli) = solver(&["solve", "mc"]) else {
+            unreachable!()
+        };
+        assert_eq!(cli, yaml_serde::from_str::<MonteCarloConfig>("{}").unwrap());
+
+        let Solver::TD(cli) = solver(&["solve", "td"]) else {
+            unreachable!()
+        };
+        assert_eq!(cli, yaml_serde::from_str::<TDConfig>("{}").unwrap());
+
+        let Solver::DQN(cli) = solver(&["solve", "dqn"]) else {
+            unreachable!()
+        };
+        assert_eq!(cli, yaml_serde::from_str::<DqnConfig>("{}").unwrap());
+    }
+
+    #[test]
+    fn system_sources_are_mutually_exclusive() {
+        assert!(
+            Args::try_parse_from([
+                "rlstudy",
+                "solve",
+                "--grid-world",
+                "grid.yaml",
+                "--gym",
+                "CartPole-v1",
+                "vi",
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn checked_in_dqn_config_parses() {
+        yaml_serde::from_str::<DqnConfig>(include_str!("../../settings/dqn_for_5x5.yaml")).unwrap();
     }
 }

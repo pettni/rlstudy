@@ -9,6 +9,14 @@ pub enum Space {
     Continuous { low: Array1<f64>, high: Array1<f64> },
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct Step<Observation> {
+    pub observation: Observation,
+    pub reward: f64,
+    pub terminated: bool,
+    pub truncated: bool,
+}
+
 /// A stateful environment that can be reset and stepped.
 pub trait Environment {
     type Observation;
@@ -20,8 +28,7 @@ pub trait Environment {
 
     fn reset(&mut self, rng: &mut dyn rand::Rng) -> Self::Observation;
 
-    /// Take `action` and return the next state and reward.
-    fn step(&mut self, action: Self::Action, rng: &mut dyn rand::Rng) -> (Self::Observation, f64);
+    fn step(&mut self, action: Self::Action, rng: &mut dyn rand::Rng) -> Step<Self::Observation>;
 }
 
 pub struct TabularEnvironment<'a> {
@@ -56,13 +63,18 @@ impl Environment for TabularEnvironment<'_> {
         self.state.unwrap()
     }
 
-    fn step(&mut self, action: usize, rng: &mut dyn rand::Rng) -> (usize, f64) {
+    fn step(&mut self, action: usize, rng: &mut dyn rand::Rng) -> Step<usize> {
         let &(next_state, reward) = match self.state {
             Some(state) => self.model.outcomes(state, action).sample(rng),
             None => panic!("Call reset() before step()"),
         };
         self.state = Some(next_state);
-        (next_state, reward)
+        Step {
+            observation: next_state,
+            reward,
+            terminated: false,
+            truncated: false,
+        }
     }
 }
 
@@ -129,9 +141,14 @@ impl Environment for FeatureEnvironment<'_> {
         self.observe(state)
     }
 
-    fn step(&mut self, action: usize, rng: &mut dyn rand::Rng) -> (Array1<f64>, f64) {
-        let (state, reward) = self.environment.step(action, rng);
-        (self.observe(state), reward)
+    fn step(&mut self, action: usize, rng: &mut dyn rand::Rng) -> Step<Array1<f64>> {
+        let step = self.environment.step(action, rng);
+        Step {
+            observation: self.observe(step.observation),
+            reward: step.reward,
+            terminated: step.terminated,
+            truncated: step.truncated,
+        }
     }
 }
 
@@ -184,10 +201,15 @@ where
         self.state
     }
 
-    fn step(&mut self, action: usize, _rng: &mut dyn rand::Rng) -> (usize, f64) {
+    fn step(&mut self, action: usize, _rng: &mut dyn rand::Rng) -> Step<usize> {
         let (next_state, reward) = (self.step_fn)(self.state, action);
         self.state = next_state;
-        (next_state, reward)
+        Step {
+            observation: next_state,
+            reward,
+            terminated: false,
+            truncated: false,
+        }
     }
 }
 
@@ -209,7 +231,15 @@ mod tests {
         assert_eq!(environment.state_space(), Space::Discrete { size: 9 });
         assert_eq!(environment.action_space(), Space::Discrete { size: 5 });
         assert_eq!(environment.reset(&mut rng), 0);
-        assert_eq!(environment.step(1, &mut rng), (1, 0.0));
+        assert_eq!(
+            environment.step(1, &mut rng),
+            Step {
+                observation: 1,
+                reward: 0.0,
+                terminated: false,
+                truncated: false,
+            }
+        );
     }
 
     #[test]
@@ -248,13 +278,13 @@ mod tests {
 
         assert_eq!(bb.reset(&mut rng), 0);
 
-        let (s, r) = bb.step(1, &mut rng);
-        assert_eq!(s, 1);
-        assert_eq!(r, 1.0);
+        let step = bb.step(1, &mut rng);
+        assert_eq!(step.observation, 1);
+        assert_eq!(step.reward, 1.0);
 
-        let (s, r) = bb.step(1, &mut rng);
-        assert_eq!(s, 2);
-        assert_eq!(r, 2.0);
+        let step = bb.step(1, &mut rng);
+        assert_eq!(step.observation, 2);
+        assert_eq!(step.reward, 2.0);
 
         assert_eq!(bb.reset(&mut rng), 0);
     }

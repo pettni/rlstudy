@@ -28,7 +28,8 @@ goal_states = {tuple(state) for state in grid_world["goal_states"]}
 
 num_states = side * side
 policy_actions = solution["policy_actions"]
-state_values = solution.get("state_values")
+snapshots = solution["snapshots"]
+state_values = snapshots[-1].get("state_values") if snapshots else None
 if len(policy_actions) != num_states:
     raise ValueError(f"expected {num_states} policy actions, got {len(policy_actions)}")
 if state_values is not None and len(state_values) != num_states:

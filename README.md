@@ -3,52 +3,53 @@
 Solve a YAML grid world:
 
 ```bash
-cargo run --quiet -- solve --gamma 0.9 --system grid_worlds/zhao_5x5.yaml vi
+cargo run --quiet -- solve --gamma 0.9 --grid-world grid_worlds/zhao_5x5.yaml vi
 ```
 
-Solvers are `vi`, `pi`, `tpi`, `mc`, and `td`. Use `--help` for their
+Solvers are `vi`, `pi`, `tpi`, `mc`, `td`, and `dqn`. Use `--help` for their
 options.
 
 ```bash
-cargo run --quiet -- solve --system grid_worlds/zhao_3x3.yaml td --episodes 10000 --episode-length 30 --epsilon 0.1 --alpha 0.1
-cargo run --quiet -- solve --system grid_worlds/zhao_3x3.yaml td --episodes 10000 --episode-length 30 --epsilon 0.1 --alpha 0.1 --expected
-cargo run --quiet -- solve --system grid_worlds/zhao_3x3.yaml td --episodes 10000 --episode-length 30 --epsilon 0.1 --alpha 0.1 --q-learning
+cargo run --quiet -- solve --grid-world grid_worlds/zhao_3x3.yaml td --episodes 10000 --episode-length 30 --epsilon 0.1 --alpha 0.1
+cargo run --quiet -- solve --grid-world grid_worlds/zhao_3x3.yaml td --variant expected-sarsa
+cargo run --quiet -- solve --grid-world grid_worlds/zhao_3x3.yaml td --variant q-learning
 ```
 
-## Render
-
-Display state values and the greedy policy with `icat`:
+Load the selected solver's settings from YAML with the solve-level `--config`
+option:
 
 ```bash
-cargo run --quiet -- solve --json --gamma 0.9 --system grid_worlds/zhao_5x5.yaml vi | uv run scripts/render_grid_world.py | icat
+cargo run --release -- solve --grid-world grid_worlds/zhao_5x5.yaml --config settings/dqn_for_5x5.yaml dqn
 ```
 
-Replace `| icat` with `> grid_world.png` to save the image.
-
-## Grid-world YAML
-
-Coordinates are zero-based `[row, column]` pairs.
-
-```yaml
-side: 3
-initial_distribution:
-  type: fixed
-  state: [0, 0]
-forbidden_states:
-  - [1, 2]
-goal_states:
-  - [2, 2]
-r_boundary: -1
-r_forbidden: -10
-r_target: 1
-r_other: 0
-```
-
-Use `type: uniform` without `state` for a uniform initial distribution.
-
-## Trace values
+Run DQN on Gymnasium through the Python environment managed by `uv`:
 
 ```bash
-cargo run --quiet -- trace --system grid_worlds/zhao_5x5.yaml --output trace.csv vi
-uv run scripts/plot_values.py trace.csv --state 0 --output state-0.png
+uv run cargo run --release -- solve --gym CartPole-v1 dqn
+```
+
+## Plot results
+
+Plot a grid-world policy and state values:
+
+```bash
+cargo run --release -- solve --json --grid-world grid_worlds/zhao_5x5.yaml vi | uv run scripts/plot_grid_world.py > grid_world.png
+```
+
+DQN grid-world policy and state values:
+
+```bash
+cargo run --release -- solve --json --grid-world grid_worlds/zhao_5x5.yaml --config settings/dqn_for_5x5.yaml dqn | uv run scripts/plot_grid_world.py > grid_world_dqn.png
+```
+
+DQN training metrics:
+
+```bash
+cargo run --release -- solve --json --grid-world grid_worlds/zhao_5x5.yaml --config settings/dqn_for_5x5.yaml dqn | uv run scripts/plot_solver.py > training.png
+```
+
+CartPole training metrics:
+
+```bash
+uv run cargo run --release -- solve --json --gym CartPole-v1 dqn | uv run scripts/plot_solver.py > cartpole_training.png
 ```

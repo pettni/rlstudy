@@ -4523,6 +4523,7 @@ dependencies = [
  "ndarray 0.17.2",
  "num-traits",
  "pyo3",
+ "pyo3-build-config",
  "rand 0.10.2",
  "rand_distr 0.6.0",
  "serde",
