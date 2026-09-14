@@ -30,10 +30,6 @@ impl<State, Action> ReplayBuffer<State, Action> {
         self.transitions.push_back(transition)
     }
 
-    pub fn len(&self) -> usize {
-        self.transitions.len()
-    }
-
     pub fn capacity(&self) -> usize {
         self.capacity
     }
@@ -48,7 +44,7 @@ impl<State, Action> ReplayBuffer<State, Action> {
         Action: Clone,
     {
         assert!(
-            batch_size <= self.len(),
+            batch_size <= self.transitions.len(),
             "Not enough data for batch size {}",
             batch_size
         );

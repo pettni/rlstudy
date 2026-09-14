@@ -1,32 +1,60 @@
-use crate::algorithms::{ModelBasedSolver, SolveResult, SolveStatus, SolverSnapshot};
+use crate::algorithms::{
+    ModelBasedSolver, SolveResult, SolveStatus, SolverSnapshot, validate_gamma,
+};
 use crate::model::TabularModel;
 use crate::policy::TabularPolicy;
 use clap::Args;
 use ndarray::{Array1, Array2, Array3};
 use num_traits::abs;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, PartialEq, Args, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Args, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ValueIterationConfig {
+    #[arg(long, default_value_t = ValueIterationConfig::default().gamma)]
+    pub gamma: f64,
     #[arg(long)]
     pub tolerance: Option<f64>,
     #[arg(long)]
     pub max_iterations: Option<usize>,
 }
 
-#[derive(Debug, Clone, PartialEq, Args, Deserialize, Default)]
+impl Default for ValueIterationConfig {
+    fn default() -> Self {
+        Self {
+            gamma: 0.9,
+            tolerance: None,
+            max_iterations: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Args, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct PolicyIterationConfig {
+    #[arg(long, default_value_t = PolicyIterationConfig::default().gamma)]
+    pub gamma: f64,
     #[arg(long)]
     pub tolerance: Option<f64>,
     #[arg(long)]
     pub max_iterations: Option<usize>,
 }
 
-#[derive(Debug, Clone, PartialEq, Args, Deserialize, Default)]
+impl Default for PolicyIterationConfig {
+    fn default() -> Self {
+        Self {
+            gamma: 0.9,
+            tolerance: None,
+            max_iterations: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Args, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct TruncatedPolicyIterationConfig {
+    #[arg(long, default_value_t = TruncatedPolicyIterationConfig::default().gamma)]
+    pub gamma: f64,
     #[arg(long)]
     pub outer_tolerance: Option<f64>,
     #[arg(long)]
@@ -35,6 +63,18 @@ pub struct TruncatedPolicyIterationConfig {
     pub inner_tolerance: Option<f64>,
     #[arg(long)]
     pub inner_max_iterations: Option<usize>,
+}
+
+impl Default for TruncatedPolicyIterationConfig {
+    fn default() -> Self {
+        Self {
+            gamma: 0.9,
+            outer_tolerance: None,
+            outer_max_iterations: None,
+            inner_tolerance: None,
+            inner_max_iterations: None,
+        }
+    }
 }
 
 pub struct StoppingCriterion {
@@ -87,6 +127,7 @@ impl StoppingCriterion {
 }
 
 pub struct TruncatedPolicyIteration {
+    gamma: f64,
     /// Outer loop convergence criterion
     outer: StoppingCriterion,
     /// Inner loop stopping crietrion
@@ -96,26 +137,44 @@ pub struct TruncatedPolicyIteration {
 }
 
 impl TruncatedPolicyIteration {
-    pub fn new(config: TruncatedPolicyIterationConfig) -> Result<Self, String> {
-        Ok(Self::with_stopping_criteria(
-            stopping_criterion(config.outer_tolerance, config.outer_max_iterations)?,
-            stopping_criterion(config.inner_tolerance, config.inner_max_iterations)?,
-        ))
+    pub fn gamma(&self) -> f64 {
+        self.gamma
     }
 
-    pub fn with_stopping_criteria(outer: StoppingCriterion, inner: StoppingCriterion) -> Self {
-        Self { outer, inner }
+    pub fn new(config: TruncatedPolicyIterationConfig) -> Result<Self, String> {
+        Self::with_stopping_criteria(
+            stopping_criterion(config.outer_tolerance, config.outer_max_iterations)?,
+            stopping_criterion(config.inner_tolerance, config.inner_max_iterations)?,
+            config.gamma,
+        )
+    }
+
+    pub fn with_stopping_criteria(
+        outer: StoppingCriterion,
+        inner: StoppingCriterion,
+        gamma: f64,
+    ) -> Result<Self, String> {
+        validate_gamma(gamma)?;
+        Ok(Self {
+            gamma,
+            outer,
+            inner,
+        })
     }
 
     pub fn value_iteration(config: ValueIterationConfig) -> Result<Self, String> {
+        validate_gamma(config.gamma)?;
         Ok(Self {
+            gamma: config.gamma,
             outer: stopping_criterion(config.tolerance, config.max_iterations)?,
             inner: StoppingCriterion::iterations(1).unwrap(),
         })
     }
 
     pub fn policy_iteration(config: PolicyIterationConfig) -> Result<Self, String> {
+        validate_gamma(config.gamma)?;
         Ok(Self {
+            gamma: config.gamma,
             outer: stopping_criterion(config.tolerance, config.max_iterations)?,
             inner: StoppingCriterion::convergence(1e-6, 10_000).unwrap(),
         })
@@ -125,14 +184,7 @@ impl TruncatedPolicyIteration {
 impl ModelBasedSolver for TruncatedPolicyIteration {
     type Observation = usize;
 
-    fn solve(
-        &self,
-        model: &TabularModel,
-        gamma: f64,
-    ) -> Result<crate::algorithms::TabularSolveResult, String> {
-        if !gamma.is_finite() || !(0.0..1.0).contains(&gamma) {
-            return Err("gamma must be finite and in [0, 1)".into());
-        }
+    fn solve(&self, model: &TabularModel) -> Result<crate::algorithms::TabularSolveResult, String> {
         let n_s = model.states().len();
         let n_a = model.actions().len();
         let mut snapshots = vec![
@@ -148,19 +200,19 @@ impl ModelBasedSolver for TruncatedPolicyIteration {
             model,
             &pi,
             &Array1::<f64>::zeros(pi.num_states()),
-            gamma,
+            self.gamma,
             &self.inner,
             0,
             &mut snapshots,
         );
 
         for iter in 1.. {
-            let new_pi = improve_policy(model, &v_pi, gamma);
+            let new_pi = improve_policy(model, &v_pi, self.gamma);
             let new_v_pi = policy_evaluation(
                 model,
                 &new_pi,
                 &v_pi,
-                gamma,
+                self.gamma,
                 &self.inner,
                 iter,
                 &mut snapshots,

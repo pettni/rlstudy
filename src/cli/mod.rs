@@ -43,12 +43,13 @@ struct SolveArgs {
     #[command(subcommand)]
     solver: Solver,
 
-    #[arg(short, long, default_value_t = 0.9)]
-    gamma: f64,
-
     /// Write values and greedy policy actions as JSON.
     #[arg(long)]
     json: bool,
+
+    /// Seed for environment, policy, replay sampling, and model initialization.
+    #[arg(long, default_value_t = 42)]
+    seed: u64,
 }
 
 pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
@@ -59,14 +60,14 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
 
 fn solve(args: &SolveArgs) -> Result<(), Box<dyn std::error::Error>> {
     let mut system = build_system(args.grid_world.as_deref(), args.gym.as_deref())?;
-    let solver = build_solver(&args.solver, args.config.as_deref())?;
-    let mut rng = StdRng::seed_from_u64(0);
-    let result = run_solver(solver, &mut system, args.gamma, &mut rng)?;
+    let (solver, parameters) = build_solver(&args.solver, args.config.as_deref())?;
+    let mut rng = StdRng::seed_from_u64(args.seed);
+    let result = run_solver(solver, &mut system, &mut rng)?;
 
     if args.json {
-        write_json_result(args, &system, &result)?;
+        write_json_result(args, &system, &result, &parameters)?;
     } else {
-        print_result(args, result);
+        print_result(args, result, &parameters);
     }
     Ok(())
 }
@@ -74,7 +75,6 @@ fn solve(args: &SolveArgs) -> Result<(), Box<dyn std::error::Error>> {
 fn run_solver(
     solver: SelectedSolver,
     system: &mut SelectedSystem,
-    gamma: f64,
     rng: &mut dyn rand::Rng,
 ) -> Result<SelectedResult, Box<dyn std::error::Error>> {
     match &solver {
@@ -82,12 +82,12 @@ fn run_solver(
             let model = system
                 .as_model()
                 .ok_or("model-based solver requires a model system")?;
-            Ok(SelectedResult::Tabular(solver.solve(model, gamma)?))
+            Ok(SelectedResult::Tabular(solver.solve(model)?))
         }
         SelectedSolver::MonteCarlo(solver) => {
             let result = match system {
                 SelectedSystem::Model(model) => {
-                    solver.solve(&mut TabularEnvironment::new(model)?, gamma, rng)
+                    solver.solve(&mut TabularEnvironment::new(model)?, rng)
                 }
                 SelectedSystem::Gym(_) => return Err("Monte Carlo requires tabular states".into()),
             };
@@ -96,7 +96,7 @@ fn run_solver(
         SelectedSolver::TD(solver) => {
             let result = match system {
                 SelectedSystem::Model(model) => {
-                    solver.solve(&mut TabularEnvironment::new(model)?, gamma, rng)
+                    solver.solve(&mut TabularEnvironment::new(model)?, rng)
                 }
                 SelectedSystem::Gym(_) => return Err("TD requires tabular states".into()),
             };
@@ -105,9 +105,9 @@ fn run_solver(
         SelectedSolver::DQN(solver) => {
             let result = match system {
                 SelectedSystem::Model(model) => {
-                    solver.solve(&mut FeatureEnvironment::new(model)?, gamma, rng)
+                    solver.solve(&mut FeatureEnvironment::new(model)?, rng)
                 }
-                SelectedSystem::Gym(environment) => solver.solve(environment, gamma, rng),
+                SelectedSystem::Gym(environment) => solver.solve(environment, rng),
             };
             Ok(SelectedResult::DQN(result?))
         }
@@ -124,7 +124,8 @@ struct VisualizationResult<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     grid_world_definition: Option<&'a str>,
     solver: &'a str,
-    gamma: f64,
+    seed: u64,
+    parameters: &'a serde_json::Value,
     #[serde(skip_serializing_if = "Option::is_none")]
     policy_actions: Option<Vec<usize>>,
     snapshots: &'a [SolverSnapshot],
@@ -134,6 +135,7 @@ fn write_json_result(
     args: &SolveArgs,
     system: &SelectedSystem,
     result: &SelectedResult,
+    parameters: &serde_json::Value,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let model = system.as_model();
     let grid_world_definition = args
@@ -176,7 +178,8 @@ fn write_json_result(
         &VisualizationResult {
             grid_world_definition,
             solver: args.solver.name(),
-            gamma: args.gamma,
+            seed: args.seed,
+            parameters,
             policy_actions,
             snapshots,
         },
@@ -185,18 +188,19 @@ fn write_json_result(
     Ok(())
 }
 
-fn print_result(args: &SolveArgs, result: SelectedResult) {
+fn print_result(args: &SolveArgs, result: SelectedResult, parameters: &serde_json::Value) {
     let system = args
         .gym
         .as_deref()
         .or_else(|| args.grid_world.as_deref().and_then(|path| path.to_str()))
         .unwrap_or("gridworld");
     println!(
-        "system={} solver={} gamma={:.3}",
+        "system={} solver={} seed={}",
         system,
         args.solver.name(),
-        args.gamma
+        args.seed
     );
+    println!("parameters={parameters}");
     match result {
         SelectedResult::Tabular(result) => {
             let values = result
@@ -300,6 +304,31 @@ mod tests {
             unreachable!()
         };
         assert_eq!(cli, yaml_serde::from_str::<DqnConfig>("{}").unwrap());
+    }
+
+    #[test]
+    fn gamma_is_part_of_solver_configuration() {
+        let Solver::VI(config) = solver(&["solve", "vi", "--gamma", "0.5"]) else {
+            unreachable!()
+        };
+        assert_eq!(config.gamma, 0.5);
+
+        let config: DqnConfig = yaml_serde::from_str("gamma: 0.5").unwrap();
+        assert_eq!(config.gamma, 0.5);
+    }
+
+    #[test]
+    fn solve_seed_defaults_and_parses() {
+        let Commands::Solve(defaults) = Args::try_parse_from(["rlstudy", "solve", "vi"])
+            .unwrap()
+            .command;
+        assert_eq!(defaults.seed, 42);
+
+        let Commands::Solve(configured) =
+            Args::try_parse_from(["rlstudy", "solve", "--seed", "7", "vi"])
+                .unwrap()
+                .command;
+        assert_eq!(configured.seed, 7);
     }
 
     #[test]

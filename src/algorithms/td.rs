@@ -1,9 +1,11 @@
-use crate::algorithms::{ModelFreeSolver, SolveResult, SolveStatus, SolverSnapshot};
+use crate::algorithms::{
+    ModelFreeSolver, SolveResult, SolveStatus, SolverSnapshot, validate_gamma,
+};
 use crate::environment::{Environment, Space, Step};
 use crate::policy::{Policy, PolicyObjective, TabularPolicy};
 use clap::{Args, ValueEnum};
 use ndarray::{Array2, ArrayView1};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// TD-family of model-free control algorithm.
 ///
@@ -17,7 +19,7 @@ use serde::Deserialize;
 ///     r_{t+1} + gamma * max_a q(s_{t+1}, a)               [Q-learning]
 ///
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum TDVariant {
     /// Basic variant
@@ -28,9 +30,11 @@ pub enum TDVariant {
     QLearning,
 }
 
-#[derive(Debug, Clone, PartialEq, Args, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Args, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct TDConfig {
+    #[arg(long, default_value_t = TDConfig::default().gamma)]
+    pub gamma: f64,
     #[arg(long, default_value_t = TDConfig::default().episodes)]
     pub episodes: u64,
     #[arg(long, default_value_t = TDConfig::default().episode_length)]
@@ -46,6 +50,7 @@ pub struct TDConfig {
 impl Default for TDConfig {
     fn default() -> Self {
         Self {
+            gamma: 0.9,
             episodes: 10_000,
             episode_length: 30,
             epsilon: 0.1,
@@ -63,6 +68,7 @@ pub struct TD {
 
 impl TD {
     pub fn new(config: TDConfig) -> Result<Self, String> {
+        validate_gamma(config.gamma)?;
         if config.episodes == 0 {
             return Err("episodes must be positive".into());
         }
@@ -81,6 +87,10 @@ impl TD {
         })
     }
 
+    pub fn gamma(&self) -> f64 {
+        self.config.gamma
+    }
+
     pub fn with_behavior_policy(mut self, policy: TabularPolicy) -> Self {
         self.behavior_policy = Some(policy);
         self
@@ -93,12 +103,8 @@ impl ModelFreeSolver for TD {
     fn solve(
         &self,
         env: &mut dyn Environment<Observation = usize, Action = usize>,
-        gamma: f64,
         rng: &mut dyn rand::Rng,
     ) -> Result<crate::algorithms::TabularSolveResult, String> {
-        if !gamma.is_finite() || !(0.0..1.0).contains(&gamma) {
-            return Err("gamma must be finite and in [0, 1)".into());
-        }
         let Space::Discrete { size: n_s } = env.state_space() else {
             return Err("TD requires a discrete state space".into());
         };
@@ -145,7 +151,7 @@ impl ModelFreeSolver for TD {
                         TDVariant::QLearning => (max_q(q_sa.row(stp)), None),
                     }
                 };
-                let td_target = rt + gamma * q_next;
+                let td_target = rt + self.config.gamma * q_next;
                 q_sa[[st, at]] -= self.config.alpha * (q_sa[[st, at]] - td_target);
 
                 // policy improvement at st

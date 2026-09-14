@@ -3,7 +3,7 @@
 Solve a YAML grid world:
 
 ```bash
-cargo run --quiet -- solve --gamma 0.9 --grid-world grid_worlds/zhao_5x5.yaml vi
+cargo run --quiet -- solve --grid-world grid_worlds/zhao_5x5.yaml vi --gamma 0.9
 ```
 
 Solvers are `vi`, `pi`, `tpi`, `mc`, `td`, and `dqn`. Use `--help` for their

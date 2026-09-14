@@ -1,3 +1,4 @@
+gamma: 0.9
 learning_rate: 0.05
 final_learning_rate: 0.001
 batch_size: 1024

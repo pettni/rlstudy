@@ -1,13 +1,17 @@
-use crate::algorithms::{ModelFreeSolver, SolveResult, SolveStatus, SolverSnapshot};
+use crate::algorithms::{
+    ModelFreeSolver, SolveResult, SolveStatus, SolverSnapshot, validate_gamma,
+};
 use crate::environment::{Environment, Space};
 use crate::policy::{Policy, PolicyObjective, TabularPolicy};
 use clap::Args;
 use ndarray::{Array2, Axis};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, PartialEq, Args, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Args, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct MonteCarloConfig {
+    #[arg(long, default_value_t = MonteCarloConfig::default().gamma)]
+    pub gamma: f64,
     #[arg(long, default_value_t = MonteCarloConfig::default().episodes)]
     pub episodes: u64,
     #[arg(long, default_value_t = MonteCarloConfig::default().episode_length)]
@@ -19,6 +23,7 @@ pub struct MonteCarloConfig {
 impl Default for MonteCarloConfig {
     fn default() -> Self {
         Self {
+            gamma: 0.9,
             episodes: 10_000,
             episode_length: 30,
             epsilon: 0.1,
@@ -36,6 +41,7 @@ pub struct MonteCarlo {
 /// Each episode contributes to the q-value estimate of each state-action pair it visits.
 impl MonteCarlo {
     pub fn new(config: MonteCarloConfig) -> Result<Self, String> {
+        validate_gamma(config.gamma)?;
         if config.episodes == 0 || config.episode_length == 0 {
             return Err("episodes and episode length must be positive".into());
         }
@@ -43,6 +49,10 @@ impl MonteCarlo {
             return Err("epsilon must be finite and in [0, 1]".into());
         }
         Ok(Self { config })
+    }
+
+    pub fn gamma(&self) -> f64 {
+        self.config.gamma
     }
 }
 
@@ -52,7 +62,6 @@ impl ModelFreeSolver for MonteCarlo {
     fn solve(
         &self,
         env: &mut dyn Environment<Observation = usize, Action = usize>,
-        gamma: f64,
         rng: &mut dyn rand::Rng,
     ) -> Result<crate::algorithms::TabularSolveResult, String> {
         let Space::Discrete { size: n_s } = env.state_space() else {
@@ -88,7 +97,7 @@ impl ModelFreeSolver for MonteCarlo {
 
             // update state-action rewards and counts from episode
             let returns = episode.into_iter().rev().scan(0.0, |g, (s, a, r)| {
-                *g = r + gamma * *g;
+                *g = r + self.config.gamma * *g;
                 Some((s, a, *g))
             });
             for (s, a, g) in returns {

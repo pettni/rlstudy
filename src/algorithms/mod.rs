@@ -15,6 +15,22 @@ pub use policy_iteration::{
 };
 pub use td::{TD, TDConfig, TDVariant};
 
+pub trait ModelBasedSolver {
+    type Observation;
+
+    fn solve(&self, model: &TabularModel) -> Result<SolveResult<Self::Observation>, String>;
+}
+
+pub trait ModelFreeSolver {
+    type Observation;
+
+    fn solve(
+        &self,
+        env: &mut dyn Environment<Observation = Self::Observation, Action = usize>,
+        rng: &mut dyn rand::Rng,
+    ) -> Result<SolveResult<Self::Observation>, String>;
+}
+
 pub struct SolveResult<Observation> {
     pub policy: Box<dyn DiscretePolicy<Observation = Observation>>,
     pub snapshots: Vec<SolverSnapshot>,
@@ -22,6 +38,13 @@ pub struct SolveResult<Observation> {
 }
 
 pub type TabularSolveResult = SolveResult<usize>;
+
+fn validate_gamma(gamma: f64) -> Result<(), String> {
+    if !gamma.is_finite() || !(0.0..1.0).contains(&gamma) {
+        return Err("gamma must be finite and in [0, 1)".into());
+    }
+    Ok(())
+}
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct SolverSnapshot {
@@ -122,25 +145,4 @@ impl SolveStatus {
             Self::Converged { iterations } | Self::IterationLimit { iterations } => iterations,
         }
     }
-}
-
-pub trait ModelBasedSolver {
-    type Observation;
-
-    fn solve(
-        &self,
-        model: &TabularModel,
-        gamma: f64,
-    ) -> Result<SolveResult<Self::Observation>, String>;
-}
-
-pub trait ModelFreeSolver {
-    type Observation;
-
-    fn solve(
-        &self,
-        env: &mut dyn Environment<Observation = Self::Observation, Action = usize>,
-        gamma: f64,
-        rng: &mut dyn rand::Rng,
-    ) -> Result<SolveResult<Self::Observation>, String>;
 }

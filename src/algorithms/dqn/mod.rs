@@ -1,7 +1,9 @@
 mod trainer;
 
 use self::trainer::DqnTrainer;
-use crate::algorithms::{ModelFreeSolver, SolveResult, SolveStatus, SolverSnapshot};
+use crate::algorithms::{
+    ModelFreeSolver, SolveResult, SolveStatus, SolverSnapshot, validate_gamma,
+};
 use crate::environment::{Environment, Space};
 use crate::evaluation::{EvaluationConfig, EvaluationMode};
 use crate::policy::{DiscretePolicy, Policy, uniform::UniformPolicy};
@@ -10,7 +12,7 @@ use burn::lr_scheduler::linear::LinearLrSchedulerConfig;
 use clap::{Args, ValueEnum};
 use ndarray::Array1;
 use rand::{RngExt, SeedableRng, rngs::StdRng};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum TargetUpdate {
@@ -18,16 +20,18 @@ pub enum TargetUpdate {
     Soft { rate: f64 },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TargetUpdateMethod {
     Hard,
     Soft,
 }
 
-#[derive(Debug, Clone, PartialEq, Args, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Args, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct DqnConfig {
+    #[arg(long, default_value_t = DqnConfig::default().gamma)]
+    pub gamma: f64,
     #[arg(long, default_value_t = DqnConfig::default().learning_rate)]
     pub learning_rate: f64,
     #[arg(long, default_value_t = DqnConfig::default().final_learning_rate)]
@@ -57,6 +61,7 @@ pub struct DqnConfig {
 impl Default for DqnConfig {
     fn default() -> Self {
         Self {
+            gamma: 0.9,
             learning_rate: 0.001,
             final_learning_rate: 0.0001,
             batch_size: 64,
@@ -82,6 +87,7 @@ pub struct DeepQLearning {
 
 impl DeepQLearning {
     pub fn new(config: DqnConfig) -> Result<Self, String> {
+        validate_gamma(config.gamma)?;
         if !config.learning_rate.is_finite()
             || config.learning_rate <= 0.0
             || config.learning_rate > 1.0
@@ -133,6 +139,10 @@ impl DeepQLearning {
         })
     }
 
+    pub fn gamma(&self) -> f64 {
+        self.config.gamma
+    }
+
     pub fn with_behavior_policy(
         mut self,
         policy: Box<dyn DiscretePolicy<Observation = Array1<f64>>>,
@@ -148,7 +158,6 @@ impl ModelFreeSolver for DeepQLearning {
     fn solve(
         &self,
         env: &mut dyn Environment<Observation = Array1<f64>, Action = usize>,
-        gamma: f64,
         rng: &mut dyn rand::Rng,
     ) -> Result<SolveResult<Array1<f64>>, String> {
         let Space::Discrete { size: n_a } = env.action_space() else {
@@ -188,13 +197,13 @@ impl ModelFreeSolver for DeepQLearning {
             f_dim,
             self.config.hidden_dims,
             n_a,
-            self.config.batch_size,
             LinearLrSchedulerConfig::new(
                 self.config.learning_rate,
                 self.config.final_learning_rate,
                 self.config.iterations.saturating_sub(1).max(1),
             )
             .init()?,
+            rng.random(),
         );
 
         let mut snapshots = Vec::new();
@@ -204,12 +213,14 @@ impl ModelFreeSolver for DeepQLearning {
         let evaluation = EvaluationConfig::new(
             self.config.evaluation_episodes,
             self.config.evaluation_max_steps,
-            EvaluationMode::DiscountedReward { gamma },
+            EvaluationMode::DiscountedReward {
+                gamma: self.config.gamma,
+            },
         )?;
 
         for iter in 0..self.config.iterations {
             let batch = buffer.sample(self.config.batch_size, rng);
-            let (updated_trainer, loss, learning_rate) = trainer.update(&batch, gamma);
+            let (updated_trainer, loss, learning_rate) = trainer.update(&batch, self.config.gamma);
             trainer = updated_trainer;
 
             match self.target_update {

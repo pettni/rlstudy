@@ -31,7 +31,7 @@ fn assert_solves_grid_world(name: &str, result: &TabularSolveResult) {
 
 fn model_based_solver_solves_grid_world(name: &str, solver: TruncatedPolicyIteration) {
     let model = grid_world(3).unwrap();
-    let result = solver.solve(&model, 0.5).unwrap();
+    let result = solver.solve(&model).unwrap();
 
     assert_solves_grid_world(name, &result);
 
@@ -96,6 +96,7 @@ fn value_iteration_solves_grid_world() {
     model_based_solver_solves_grid_world(
         "value-iteration",
         TruncatedPolicyIteration::value_iteration(ValueIterationConfig {
+            gamma: 0.5,
             tolerance: Some(1e-6),
             max_iterations: Some(1000),
         })
@@ -108,6 +109,7 @@ fn policy_iteration_solves_grid_world() {
     model_based_solver_solves_grid_world(
         "policy-iteration",
         TruncatedPolicyIteration::policy_iteration(PolicyIterationConfig {
+            gamma: 0.5,
             tolerance: Some(1e-6),
             max_iterations: Some(1000),
         })
@@ -120,6 +122,7 @@ fn truncated_policy_iteration_solves_grid_world() {
     model_based_solver_solves_grid_world(
         "truncated-policy-iteration",
         TruncatedPolicyIteration::new(TruncatedPolicyIterationConfig {
+            gamma: 0.5,
             outer_tolerance: Some(1e-6),
             outer_max_iterations: Some(1000),
             inner_tolerance: None,
@@ -134,10 +137,13 @@ fn monte_carlo_solves_grid_world() {
     let model = grid_world(3).unwrap();
     let mut environment = TabularEnvironment::new(&model).unwrap();
     let mut rng = StdRng::seed_from_u64(0);
-    let result = MonteCarlo::new(MonteCarloConfig::default())
-        .unwrap()
-        .solve(&mut environment, 0.5, &mut rng)
-        .unwrap();
+    let result = MonteCarlo::new(MonteCarloConfig {
+        gamma: 0.5,
+        ..MonteCarloConfig::default()
+    })
+    .unwrap()
+    .solve(&mut environment, &mut rng)
+    .unwrap();
 
     assert_solves_grid_world("monte-carlo", &result);
     assert_eq!(
@@ -151,10 +157,13 @@ fn sarsa_solves_grid_world() {
     let model = grid_world(3).unwrap();
     let mut environment = TabularEnvironment::new(&model).unwrap();
     let mut rng = StdRng::seed_from_u64(0);
-    let result = TD::new(TDConfig::default())
-        .unwrap()
-        .solve(&mut environment, 0.5, &mut rng)
-        .unwrap();
+    let result = TD::new(TDConfig {
+        gamma: 0.5,
+        ..TDConfig::default()
+    })
+    .unwrap()
+    .solve(&mut environment, &mut rng)
+    .unwrap();
 
     assert_solves_grid_world("sarsa", &result);
     assert_eq!(
@@ -169,11 +178,12 @@ fn expected_sarsa_solves_grid_world() {
     let mut environment = TabularEnvironment::new(&model).unwrap();
     let mut rng = StdRng::seed_from_u64(0);
     let result = TD::new(TDConfig {
+        gamma: 0.5,
         variant: TDVariant::ExpectedSarsa,
         ..TDConfig::default()
     })
     .unwrap()
-    .solve(&mut environment, 0.5, &mut rng)
+    .solve(&mut environment, &mut rng)
     .unwrap();
 
     assert_solves_grid_world("expected-sarsa", &result);
@@ -189,11 +199,12 @@ fn q_learning_solves_grid_world() {
     let mut environment = TabularEnvironment::new(&model).unwrap();
     let mut rng = StdRng::seed_from_u64(0);
     let result = TD::new(TDConfig {
+        gamma: 0.5,
         variant: TDVariant::QLearning,
         ..TDConfig::default()
     })
     .unwrap()
-    .solve(&mut environment, 0.5, &mut rng)
+    .solve(&mut environment, &mut rng)
     .unwrap();
 
     assert_solves_grid_world("q-learning", &result);
@@ -209,13 +220,14 @@ fn q_learning_off_policy_solves_grid_world() {
     let mut environment = TabularEnvironment::new(&model).unwrap();
     let mut rng = StdRng::seed_from_u64(0);
     let result = TD::new(TDConfig {
+        gamma: 0.5,
         epsilon: 0.0,
         variant: TDVariant::QLearning,
         ..TDConfig::default()
     })
     .unwrap()
     .with_behavior_policy(TabularPolicy::uniform(9, 5).unwrap())
-    .solve(&mut environment, 0.5, &mut rng)
+    .solve(&mut environment, &mut rng)
     .unwrap();
 
     assert_solves_grid_world("q-learning", &result);
@@ -232,12 +244,13 @@ fn q_learning_uses_negative_next_state_values() {
     });
     let mut rng = StdRng::seed_from_u64(0);
     let result = TD::new(TDConfig {
+        gamma: 0.5,
         episode_length: 1,
         variant: TDVariant::QLearning,
         ..TDConfig::default()
     })
     .unwrap()
-    .solve(&mut environment, 0.5, &mut rng)
+    .solve(&mut environment, &mut rng)
     .unwrap();
 
     assert!(
@@ -260,14 +273,22 @@ fn solver_configuration_is_validated() {
     assert!(StoppingCriterion::convergence(0.0, 10).is_err());
     assert!(StoppingCriterion::convergence(f64::NAN, 10).is_err());
 
-    let model = grid_world(3).unwrap();
-    let solver = TruncatedPolicyIteration::value_iteration(ValueIterationConfig {
-        tolerance: None,
-        max_iterations: Some(1),
-    })
-    .unwrap();
-    assert!(solver.solve(&model, -0.1).is_err());
-    assert!(solver.solve(&model, 1.0).is_err());
+    assert!(
+        TruncatedPolicyIteration::value_iteration(ValueIterationConfig {
+            gamma: -0.1,
+            tolerance: None,
+            max_iterations: Some(1),
+        })
+        .is_err()
+    );
+    assert!(
+        TruncatedPolicyIteration::value_iteration(ValueIterationConfig {
+            gamma: 1.0,
+            tolerance: None,
+            max_iterations: Some(1),
+        })
+        .is_err()
+    );
 }
 
 #[test]
@@ -276,22 +297,26 @@ fn solver_reports_iteration_limit() {
     let solver = TruncatedPolicyIteration::with_stopping_criteria(
         StoppingCriterion::iterations(1).unwrap(),
         StoppingCriterion::iterations(1).unwrap(),
-    );
+        0.5,
+    )
+    .unwrap();
 
-    let result = solver.solve(&model, 0.5).unwrap();
+    let result = solver.solve(&model).unwrap();
 
     assert_eq!(result.status, SolveStatus::IterationLimit { iterations: 1 });
 }
 
 #[test]
-fn solver_trace_records_each_evaluation_sweep() {
+fn solver_records_each_evaluation_sweep() {
     let model = grid_world(3).unwrap();
     let solver = TruncatedPolicyIteration::with_stopping_criteria(
         StoppingCriterion::iterations(1).unwrap(),
         StoppingCriterion::iterations(2).unwrap(),
-    );
+        0.5,
+    )
+    .unwrap();
 
-    let result = solver.solve(&model, 0.5).unwrap();
+    let result = solver.solve(&model).unwrap();
     let snapshots = &result.snapshots;
 
     assert_eq!(snapshots.len(), 5);

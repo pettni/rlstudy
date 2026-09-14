@@ -3,7 +3,7 @@ use rlstudy::algorithms::{
     DeepQLearning, DqnConfig, MonteCarlo, MonteCarloConfig, PolicyIterationConfig, TD, TDConfig,
     TDVariant, TruncatedPolicyIteration, TruncatedPolicyIterationConfig, ValueIterationConfig,
 };
-use serde::de::DeserializeOwned;
+use serde::{Serialize, de::DeserializeOwned};
 use std::{fs, path::Path};
 
 #[derive(Subcommand, Clone)]
@@ -43,43 +43,64 @@ pub(super) enum SelectedSolver {
 pub(super) fn build_solver(
     solver: &Solver,
     config_path: Option<&Path>,
-) -> Result<SelectedSolver, Box<dyn std::error::Error>> {
+) -> Result<(SelectedSolver, serde_json::Value), Box<dyn std::error::Error>> {
     match solver {
-        Solver::VI(config) => Ok(SelectedSolver::ModelBased(
-            TruncatedPolicyIteration::value_iteration(resolve_config(config, config_path)?)?,
-        )),
-        Solver::PI(config) => Ok(SelectedSolver::ModelBased(
-            TruncatedPolicyIteration::policy_iteration(resolve_config(config, config_path)?)?,
-        )),
-        Solver::TPI(config) => Ok(SelectedSolver::ModelBased(TruncatedPolicyIteration::new(
-            resolve_config(config, config_path)?,
-        )?)),
-        Solver::MC(config) => Ok(SelectedSolver::MonteCarlo(MonteCarlo::new(
-            resolve_config(config, config_path)?,
-        )?)),
-        Solver::TD(config) => Ok(SelectedSolver::TD(TD::new(resolve_config(
-            config,
-            config_path,
-        )?)?)),
-        Solver::DQN(config) => Ok(SelectedSolver::DQN(DeepQLearning::new(resolve_config(
-            config,
-            config_path,
-        )?)?)),
+        Solver::VI(config) => {
+            let (config, parameters) = resolve_config(config, config_path)?;
+            Ok((
+                SelectedSolver::ModelBased(TruncatedPolicyIteration::value_iteration(config)?),
+                parameters,
+            ))
+        }
+        Solver::PI(config) => {
+            let (config, parameters) = resolve_config(config, config_path)?;
+            Ok((
+                SelectedSolver::ModelBased(TruncatedPolicyIteration::policy_iteration(config)?),
+                parameters,
+            ))
+        }
+        Solver::TPI(config) => {
+            let (config, parameters) = resolve_config(config, config_path)?;
+            Ok((
+                SelectedSolver::ModelBased(TruncatedPolicyIteration::new(config)?),
+                parameters,
+            ))
+        }
+        Solver::MC(config) => {
+            let (config, parameters) = resolve_config(config, config_path)?;
+            Ok((
+                SelectedSolver::MonteCarlo(MonteCarlo::new(config)?),
+                parameters,
+            ))
+        }
+        Solver::TD(config) => {
+            let (config, parameters) = resolve_config(config, config_path)?;
+            Ok((SelectedSolver::TD(TD::new(config)?), parameters))
+        }
+        Solver::DQN(config) => {
+            let (config, parameters) = resolve_config(config, config_path)?;
+            Ok((SelectedSolver::DQN(DeepQLearning::new(config)?), parameters))
+        }
     }
 }
 
-fn resolve_config<T>(config: &T, path: Option<&Path>) -> Result<T, Box<dyn std::error::Error>>
+fn resolve_config<T>(
+    config: &T,
+    path: Option<&Path>,
+) -> Result<(T, serde_json::Value), Box<dyn std::error::Error>>
 where
-    T: Clone + DeserializeOwned,
+    T: Clone + DeserializeOwned + Serialize,
 {
-    let Some(path) = path else {
-        return Ok(config.clone());
+    let config = if let Some(path) = path {
+        let contents = fs::read_to_string(path)
+            .map_err(|error| format!("failed to read solver config {}: {error}", path.display()))?;
+        yaml_serde::from_str(&contents)
+            .map_err(|error| format!("failed to parse solver config {}: {error}", path.display()))?
+    } else {
+        config.clone()
     };
-    let contents = fs::read_to_string(path)
-        .map_err(|error| format!("failed to read solver config {}: {error}", path.display()))?;
-    yaml_serde::from_str(&contents).map_err(|error| {
-        format!("failed to parse solver config {}: {error}", path.display()).into()
-    })
+    let parameters = serde_json::to_value(&config)?;
+    Ok((config, parameters))
 }
 
 #[cfg(test)]

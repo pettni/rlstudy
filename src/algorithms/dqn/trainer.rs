@@ -7,18 +7,62 @@ use burn::{
     lr_scheduler::{LrScheduler, linear::LinearLrScheduler},
     module::AutodiffModule,
     optim::{Adam, AdamConfig, GradientsParams, Optimizer, adaptor::OptimizerAdaptor},
-    tensor::{Int, TensorData},
+    tensor::{Int, TensorData, backend::Backend},
 };
 use ndarray::Array1;
 
 type TrainingBackend = Autodiff<Flex>;
+
+struct TrainingBatch {
+    states: Tensor<TrainingBackend, 2>,
+    actions: Tensor<TrainingBackend, 1, Int>,
+    rewards: Tensor<TrainingBackend, 1>,
+    next_states: Tensor<TrainingBackend, 2>,
+    bootstrap: Tensor<TrainingBackend, 1>,
+}
+
+impl TrainingBatch {
+    fn new(
+        transitions: &[Transition<Array1<f64>, usize>],
+        feature_dim: usize,
+        device: &FlexDevice,
+    ) -> Self {
+        let batch_size = transitions.len();
+        let mut state_data = Vec::with_capacity(batch_size * feature_dim);
+        let mut action_data = Vec::with_capacity(batch_size);
+        let mut reward_data = Vec::with_capacity(batch_size);
+        let mut next_state_data = Vec::with_capacity(batch_size * feature_dim);
+        let mut bootstrap_data = Vec::with_capacity(batch_size);
+
+        for transition in transitions {
+            state_data.extend(transition.state.iter().copied());
+            action_data.push(transition.action as i64);
+            reward_data.push(transition.reward);
+            next_state_data.extend(transition.next_state.iter().copied());
+            bootstrap_data.push(if transition.terminated { 0.0 } else { 1.0 });
+        }
+
+        Self {
+            states: Tensor::from_data(
+                TensorData::new(state_data, [batch_size, feature_dim]),
+                device,
+            ),
+            actions: Tensor::from_data(TensorData::new(action_data, [batch_size]), device),
+            rewards: Tensor::from_data(TensorData::new(reward_data, [batch_size]), device),
+            next_states: Tensor::from_data(
+                TensorData::new(next_state_data, [batch_size, feature_dim]),
+                device,
+            ),
+            bootstrap: Tensor::from_data(TensorData::new(bootstrap_data, [batch_size]), device),
+        }
+    }
+}
 
 pub(super) struct DqnTrainer {
     online: MlpModel<TrainingBackend>,
     target: MlpModel<TrainingBackend>,
     optimizer: OptimizerAdaptor<Adam, MlpModel<TrainingBackend>, TrainingBackend>,
     device: FlexDevice,
-    batch_size: usize,
     feature_dim: usize,
     learning_rate_scheduler: LinearLrScheduler,
 }
@@ -28,10 +72,11 @@ impl DqnTrainer {
         feature_dim: usize,
         hidden_dim: usize,
         num_actions: usize,
-        batch_size: usize,
         learning_rate_scheduler: LinearLrScheduler,
+        seed: u64,
     ) -> Self {
-        let device = FlexDevice::default();
+        let device = FlexDevice;
+        <TrainingBackend as Backend>::seed(&device, seed);
         let target = MlpModel::new(feature_dim, hidden_dim, num_actions, &device);
 
         Self {
@@ -39,7 +84,6 @@ impl DqnTrainer {
             target,
             optimizer: AdamConfig::new().init(),
             device,
-            batch_size,
             feature_dim,
             learning_rate_scheduler,
         }
@@ -50,52 +94,20 @@ impl DqnTrainer {
         batch: &[Transition<Array1<f64>, usize>],
         gamma: f64,
     ) -> (Self, f64, f64) {
-        let mut state_data = Vec::with_capacity(self.batch_size * self.feature_dim);
-        let mut action_data = Vec::with_capacity(self.batch_size);
-        let mut reward_data = Vec::with_capacity(self.batch_size);
-        let mut next_state_data = Vec::with_capacity(self.batch_size * self.feature_dim);
-        let mut bootstrap_data = Vec::with_capacity(self.batch_size);
-
-        for transition in batch {
-            state_data.extend(transition.state.iter().copied());
-            action_data.push(transition.action as i64);
-            reward_data.push(transition.reward);
-            next_state_data.extend(transition.next_state.iter().copied());
-            bootstrap_data.push(if transition.terminated { 0.0 } else { 1.0 });
-        }
-
-        let states = Tensor::<TrainingBackend, 2>::from_data(
-            TensorData::new(state_data, [self.batch_size, self.feature_dim]),
-            &self.device,
-        );
-        let actions = Tensor::<TrainingBackend, 1, Int>::from_data(
-            TensorData::new(action_data, [self.batch_size]),
-            &self.device,
-        );
-        let rewards = Tensor::<TrainingBackend, 1>::from_data(
-            TensorData::new(reward_data, [self.batch_size]),
-            &self.device,
-        );
-        let next_states = Tensor::<TrainingBackend, 2>::from_data(
-            TensorData::new(next_state_data, [self.batch_size, self.feature_dim]),
-            &self.device,
-        );
-        let bootstrap = Tensor::<TrainingBackend, 1>::from_data(
-            TensorData::new(bootstrap_data, [self.batch_size]),
-            &self.device,
-        );
+        let batch_size = batch.len();
+        let batch = TrainingBatch::new(batch, self.feature_dim, &self.device);
 
         let predicted = self
             .online
-            .forward(states)
-            .gather(1, actions.reshape([self.batch_size, 1]))
+            .forward(batch.states)
+            .gather(1, batch.actions.reshape([batch_size, 1]))
             .squeeze_dim(1);
-        let target = rewards
-            + bootstrap
+        let target = batch.rewards
+            + batch.bootstrap
                 * gamma
                 * self
                     .target
-                    .forward(next_states)
+                    .forward(batch.next_states)
                     .max_dim(1)
                     .squeeze_dim(1)
                     .detach();
