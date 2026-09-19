@@ -50,10 +50,6 @@ impl MonteCarlo {
         }
         Ok(Self { config })
     }
-
-    pub fn gamma(&self) -> f64 {
-        self.config.gamma
-    }
 }
 
 impl ModelFreeSolver for MonteCarlo {

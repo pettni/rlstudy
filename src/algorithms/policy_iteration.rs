@@ -137,10 +137,6 @@ pub struct TruncatedPolicyIteration {
 }
 
 impl TruncatedPolicyIteration {
-    pub fn gamma(&self) -> f64 {
-        self.gamma
-    }
-
     pub fn new(config: TruncatedPolicyIterationConfig) -> Result<Self, String> {
         Self::with_stopping_criteria(
             stopping_criterion(config.outer_tolerance, config.outer_max_iterations)?,

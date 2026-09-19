@@ -36,7 +36,7 @@ Plot a grid-world policy and state values:
 cargo run --release -- solve --json --grid-world grid_worlds/zhao_5x5.yaml vi | uv run scripts/plot_grid_world.py > grid_world.png
 ```
 
-DQN grid-world policy and state values:
+DQN grid-world policy:
 
 ```bash
 cargo run --release -- solve --json --grid-world grid_worlds/zhao_5x5.yaml --config settings/dqn_for_5x5.yaml dqn | uv run scripts/plot_grid_world.py > grid_world_dqn.png

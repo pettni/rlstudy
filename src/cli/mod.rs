@@ -102,21 +102,30 @@ fn run_solver(
             };
             Ok(SelectedResult::Tabular(result?))
         }
-        SelectedSolver::DQN(solver) => {
+        SelectedSolver::Dqn(solver) => {
             let result = match system {
                 SelectedSystem::Model(model) => {
                     solver.solve(&mut FeatureEnvironment::new(model)?, rng)
                 }
                 SelectedSystem::Gym(environment) => solver.solve(environment, rng),
             };
-            Ok(SelectedResult::DQN(result?))
+            Ok(SelectedResult::Dqn(result?))
+        }
+        SelectedSolver::Reinforce(solver) => {
+            let result = match system {
+                SelectedSystem::Model(model) => {
+                    solver.solve(&mut FeatureEnvironment::new(model)?, rng)
+                }
+                SelectedSystem::Gym(environment) => solver.solve(environment, rng),
+            };
+            Ok(SelectedResult::Dqn(result?))
         }
     }
 }
 
 enum SelectedResult {
     Tabular(TabularSolveResult),
-    DQN(SolveResult<Array1<f64>>),
+    Dqn(SolveResult<Array1<f64>>),
 }
 
 #[derive(Serialize)]
@@ -157,7 +166,7 @@ fn write_json_result(
                     .collect(),
             ),
         ),
-        SelectedResult::DQN(result) => (
+        SelectedResult::Dqn(result) => (
             result.snapshots.as_slice(),
             model.map(|model| {
                 (0..model.states().len())
@@ -177,7 +186,7 @@ fn write_json_result(
         std::io::stdout(),
         &VisualizationResult {
             grid_world_definition,
-            solver: args.solver.name(),
+            solver: args.solver.as_str(),
             seed: args.seed,
             parameters,
             policy_actions,
@@ -197,7 +206,7 @@ fn print_result(args: &SolveArgs, result: SelectedResult, parameters: &serde_jso
     println!(
         "system={} solver={} seed={}",
         system,
-        args.solver.name(),
+        args.solver.as_str(),
         args.seed
     );
     println!("parameters={parameters}");
@@ -214,16 +223,13 @@ fn print_result(args: &SolveArgs, result: SelectedResult, parameters: &serde_jso
             println!("iterations={}", result.status.iterations());
             println!("status={:?}", result.status);
             println!("policy:");
-            for s in 0..values.len() {
+            for (s, value) in values.iter().enumerate() {
                 let action = result.policy.greedy_action(&s);
-                println!(
-                    "  state {} [value {:.3}] -> action {}",
-                    s, values[s], action
-                );
+                println!("  state {} [value {:.3}] -> action {}", s, value, action);
             }
             print_snapshots(&result.snapshots);
         }
-        SelectedResult::DQN(result) => {
+        SelectedResult::Dqn(result) => {
             println!("iterations={}", result.status.iterations());
             println!("status={:?}", result.status);
             print_snapshots(&result.snapshots);
@@ -251,7 +257,7 @@ fn print_snapshots(snapshots: &[SolverSnapshot]) {
 mod tests {
     use super::*;
     use rlstudy::algorithms::{
-        DqnConfig, MonteCarloConfig, PolicyIterationConfig, TDConfig,
+        DqnConfig, MonteCarloConfig, PolicyIterationConfig, ReinforceConfig, TDConfig,
         TruncatedPolicyIterationConfig, ValueIterationConfig,
     };
 
@@ -282,7 +288,7 @@ mod tests {
             yaml_serde::from_str::<PolicyIterationConfig>("{}").unwrap()
         );
 
-        let Solver::TPI(cli) = solver(&["solve", "tpi"]) else {
+        let Solver::Tpi(cli) = solver(&["solve", "tpi"]) else {
             unreachable!()
         };
         assert_eq!(
@@ -300,10 +306,16 @@ mod tests {
         };
         assert_eq!(cli, yaml_serde::from_str::<TDConfig>("{}").unwrap());
 
-        let Solver::DQN(cli) = solver(&["solve", "dqn"]) else {
+        let Solver::Dqn(cli) = solver(&["solve", "dqn"]) else {
             unreachable!()
         };
+        let cli: DqnConfig = cli.into();
         assert_eq!(cli, yaml_serde::from_str::<DqnConfig>("{}").unwrap());
+
+        let Solver::Reinforce(cli) = solver(&["solve", "reinforce"]) else {
+            unreachable!()
+        };
+        assert_eq!(cli, yaml_serde::from_str::<ReinforceConfig>("{}").unwrap());
     }
 
     #[test]
@@ -350,5 +362,7 @@ mod tests {
     #[test]
     fn checked_in_dqn_config_parses() {
         yaml_serde::from_str::<DqnConfig>(include_str!("../../settings/dqn_for_5x5.yaml")).unwrap();
+        yaml_serde::from_str::<DqnConfig>(include_str!("../../settings/dqn_for_cartpole.yaml"))
+            .unwrap();
     }
 }

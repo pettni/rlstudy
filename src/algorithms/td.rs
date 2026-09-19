@@ -87,10 +87,6 @@ impl TD {
         })
     }
 
-    pub fn gamma(&self) -> f64 {
-        self.config.gamma
-    }
-
     pub fn with_behavior_policy(mut self, policy: TabularPolicy) -> Self {
         self.behavior_policy = Some(policy);
         self
@@ -111,6 +107,19 @@ impl ModelFreeSolver for TD {
         let Space::Discrete { size: n_a } = env.action_space() else {
             return Err("TD requires a discrete action space".into());
         };
+
+        if let Some(policy) = &self.behavior_policy {
+            if policy.num_states() != n_s || policy.num_actions() != n_a {
+                return Err(format!(
+                    "behavior policy has shape {}x{}, expected {n_s}x{n_a}",
+                    policy.num_states(),
+                    policy.num_actions()
+                ));
+            }
+            if self.config.variant == TDVariant::Sarsa {
+                return Err("fixed behavior policies are not supported for Sarsa".into());
+            }
+        }
 
         let mut q_sa = Array2::<f64>::zeros((n_s, n_a));
         let mut pi_target = TabularPolicy::uniform(n_s, n_a).unwrap();
@@ -218,6 +227,8 @@ fn max_q(q_a: ArrayView1<'_, f64>) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::environment::BlackBox;
+    use rand::{SeedableRng, rngs::StdRng};
 
     #[test]
     fn configuration_is_validated() {
@@ -234,5 +245,42 @@ mod tests {
         assert!(TD::new(invalid(10, 10, 0.1, 0.0)).is_err());
         assert!(TD::new(invalid(10, 10, 0.1, 1.1)).is_err());
         assert!(TD::new(TDConfig::default()).is_ok());
+    }
+
+    #[test]
+    fn fixed_behavior_policy_is_rejected_for_sarsa() {
+        let mut environment = BlackBox::new(2, 2, 0, |state, _| (state, 0.0));
+        let mut rng = StdRng::seed_from_u64(0);
+        let solver = TD::new(TDConfig {
+            episodes: 1,
+            episode_length: 1,
+            ..TDConfig::default()
+        })
+        .unwrap()
+        .with_behavior_policy(TabularPolicy::uniform(2, 2).unwrap());
+
+        assert_eq!(
+            solver.solve(&mut environment, &mut rng).err().unwrap(),
+            "fixed behavior policies are not supported for Sarsa"
+        );
+    }
+
+    #[test]
+    fn behavior_policy_shape_must_match_environment() {
+        let mut environment = BlackBox::new(2, 2, 0, |state, _| (state, 0.0));
+        let mut rng = StdRng::seed_from_u64(0);
+        let solver = TD::new(TDConfig {
+            episodes: 1,
+            episode_length: 1,
+            variant: TDVariant::QLearning,
+            ..TDConfig::default()
+        })
+        .unwrap()
+        .with_behavior_policy(TabularPolicy::uniform(1, 3).unwrap());
+
+        assert_eq!(
+            solver.solve(&mut environment, &mut rng).err().unwrap(),
+            "behavior policy has shape 1x3, expected 2x2"
+        );
     }
 }

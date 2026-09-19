@@ -31,6 +31,26 @@ pub trait DiscretePolicy {
             .map(|(action, _)| action)
             .expect("policy has actions")
     }
+
+    fn epsilon_greedy_action(
+        &self,
+        observation: &Self::Observation,
+        eps: f64,
+        rng: &mut dyn rand::Rng,
+    ) -> usize {
+        use rand::RngExt;
+
+        let probabilities = self.action_probabilities(observation);
+
+        let sample: f64 = rng.random();
+        if sample < eps {
+            // return random action
+            return rng.random_range(0..probabilities.len());
+        }
+
+        // return sampled action
+        self.sample_action(observation, rng)
+    }
 }
 
 impl<T> Policy for T

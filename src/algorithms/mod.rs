@@ -5,14 +5,16 @@ use crate::policy::DiscretePolicy;
 pub mod dqn;
 pub mod monte_carlo;
 pub mod policy_iteration;
+pub mod reinforce;
 pub mod td;
 
-pub use dqn::{DeepQLearning, DqnConfig, TargetUpdate, TargetUpdateMethod};
+pub use dqn::{DeepQLearning, DqnArgs, DqnConfig, Loss, Schedule, TargetUpdateConfig};
 pub use monte_carlo::{MonteCarlo, MonteCarloConfig};
 pub use policy_iteration::{
     PolicyIterationConfig, StoppingCriterion, TruncatedPolicyIteration,
     TruncatedPolicyIterationConfig, ValueIterationConfig,
 };
+pub use reinforce::{Reinforce, ReinforceConfig};
 pub use td::{TD, TDConfig, TDVariant};
 
 pub trait ModelBasedSolver {
@@ -50,6 +52,8 @@ fn validate_gamma(gamma: f64) -> Result<(), String> {
 pub struct SolverSnapshot {
     pub iteration: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub episode: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub policy_iteration: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub evaluation_sweep: Option<usize>,
@@ -69,6 +73,7 @@ impl SolverSnapshot {
     pub fn new(iteration: usize) -> Self {
         Self {
             iteration,
+            episode: None,
             policy_iteration: None,
             evaluation_sweep: None,
             state_values: None,
@@ -77,6 +82,11 @@ impl SolverSnapshot {
             learning_rate: None,
             evaluation_return: None,
         }
+    }
+
+    pub fn episode(mut self, episode: usize) -> Self {
+        self.episode = Some(episode);
+        self
     }
 
     pub fn policy_iteration(mut self, policy_iteration: usize) -> Self {

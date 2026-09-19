@@ -1,60 +1,64 @@
+mod replay_buffer;
 mod trainer;
 
+use self::replay_buffer::{ReplayBuffer, Transition};
 use self::trainer::DqnTrainer;
 use crate::algorithms::{
     ModelFreeSolver, SolveResult, SolveStatus, SolverSnapshot, validate_gamma,
 };
 use crate::environment::{Environment, Space};
 use crate::evaluation::{EvaluationConfig, EvaluationMode};
+pub use crate::network::loss::Loss;
 use crate::policy::{DiscretePolicy, Policy, uniform::UniformPolicy};
-use crate::replay_buffer::{ReplayBuffer, Transition};
-use burn::lr_scheduler::linear::LinearLrSchedulerConfig;
-use clap::{Args, ValueEnum};
+pub use crate::schedule::Schedule;
+use clap::Args;
 use ndarray::Array1;
 use rand::{RngExt, SeedableRng, rngs::StdRng};
 use serde::{Deserialize, Serialize};
+use std::{io::IsTerminal, str::FromStr};
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum TargetUpdate {
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum TargetUpdateConfig {
     Hard { steps: usize },
     Soft { rate: f64 },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Deserialize, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum TargetUpdateMethod {
-    Hard,
-    Soft,
+impl Default for TargetUpdateConfig {
+    fn default() -> Self {
+        Self::Hard { steps: 500 }
+    }
 }
 
-#[derive(Debug, Clone, PartialEq, Args, Deserialize, Serialize)]
+// Clap's ValueEnum only supports fieldless variants, so parse this data-carrying enum directly.
+impl FromStr for TargetUpdateConfig {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "hard" => Ok(Self::default()),
+            "soft" => Ok(Self::Soft { rate: 0.005 }),
+            _ => Err("expected hard or soft".into()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct DqnConfig {
-    #[arg(long, default_value_t = DqnConfig::default().gamma)]
     pub gamma: f64,
-    #[arg(long, default_value_t = DqnConfig::default().learning_rate)]
-    pub learning_rate: f64,
-    #[arg(long, default_value_t = DqnConfig::default().final_learning_rate)]
-    pub final_learning_rate: f64,
-    #[arg(long, default_value_t = DqnConfig::default().batch_size)]
+    pub learning_rate: Schedule,
     pub batch_size: usize,
-    #[arg(long, default_value_t = DqnConfig::default().replay_capacity)]
     pub replay_capacity: usize,
-    #[arg(long, default_value_t = DqnConfig::default().iterations)]
-    pub iterations: usize,
-    #[arg(long, value_enum, default_value_t = DqnConfig::default().target_update)]
-    pub target_update: TargetUpdateMethod,
-    #[arg(long, default_value_t = DqnConfig::default().target_sync_steps)]
-    pub target_sync_steps: usize,
-    #[arg(long, default_value_t = DqnConfig::default().target_update_rate)]
-    pub target_update_rate: f64,
-    #[arg(long, default_value_t = DqnConfig::default().hidden_dims)]
+    pub warm_up_transitions: usize,
+    pub episodes: usize,
+    pub episode_length: Option<usize>,
+    pub epsilon_schedule: Schedule,
+    pub target_update: TargetUpdateConfig,
+    pub loss: Loss,
     pub hidden_dims: usize,
-    #[arg(long, default_value_t = DqnConfig::default().evaluation_interval)]
     pub evaluation_interval: usize,
-    #[arg(long, default_value_t = DqnConfig::default().evaluation_episodes)]
     pub evaluation_episodes: usize,
-    #[arg(long, default_value_t = DqnConfig::default().evaluation_max_steps)]
     pub evaluation_max_steps: usize,
 }
 
@@ -62,14 +66,15 @@ impl Default for DqnConfig {
     fn default() -> Self {
         Self {
             gamma: 0.9,
-            learning_rate: 0.001,
-            final_learning_rate: 0.0001,
+            learning_rate: Schedule::Constant { value: 0.001 },
             batch_size: 64,
             replay_capacity: 1_000,
-            iterations: 100_000,
-            target_update: TargetUpdateMethod::Hard,
-            target_sync_steps: 500,
-            target_update_rate: 0.005,
+            warm_up_transitions: 1_000,
+            episodes: 50,
+            episode_length: None,
+            epsilon_schedule: Schedule::default(),
+            target_update: TargetUpdateConfig::default(),
+            loss: Loss::default(),
             hidden_dims: 64,
             evaluation_interval: 100,
             evaluation_episodes: 10,
@@ -78,69 +83,74 @@ impl Default for DqnConfig {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Args)]
+pub struct DqnArgs {
+    #[arg(long, default_value_t = DqnConfig::default().gamma)]
+    gamma: f64,
+    #[arg(long)]
+    learning_rate: Option<Schedule>,
+    #[arg(long, default_value_t = DqnConfig::default().batch_size)]
+    batch_size: usize,
+    #[arg(long, default_value_t = DqnConfig::default().replay_capacity)]
+    replay_capacity: usize,
+    #[arg(long, default_value_t = DqnConfig::default().warm_up_transitions)]
+    warm_up_transitions: usize,
+    #[arg(long, default_value_t = DqnConfig::default().episodes)]
+    episodes: usize,
+    #[arg(long)]
+    episode_length: Option<usize>,
+    #[arg(long)]
+    epsilon_schedule: Option<Schedule>,
+    #[arg(long)]
+    target_update: Option<TargetUpdateConfig>,
+    #[arg(long, value_enum, default_value_t = DqnConfig::default().loss)]
+    loss: Loss,
+    #[arg(long, default_value_t = DqnConfig::default().hidden_dims)]
+    hidden_dims: usize,
+    #[arg(long, default_value_t = DqnConfig::default().evaluation_interval)]
+    evaluation_interval: usize,
+    #[arg(long, default_value_t = DqnConfig::default().evaluation_episodes)]
+    evaluation_episodes: usize,
+    #[arg(long, default_value_t = DqnConfig::default().evaluation_max_steps)]
+    evaluation_max_steps: usize,
+}
+
+impl From<DqnArgs> for DqnConfig {
+    fn from(args: DqnArgs) -> Self {
+        Self {
+            gamma: args.gamma,
+            learning_rate: args
+                .learning_rate
+                .unwrap_or(DqnConfig::default().learning_rate),
+            batch_size: args.batch_size,
+            replay_capacity: args.replay_capacity,
+            warm_up_transitions: args.warm_up_transitions,
+            episodes: args.episodes,
+            episode_length: args.episode_length,
+            epsilon_schedule: args.epsilon_schedule.unwrap_or_default(),
+            target_update: args.target_update.unwrap_or_default(),
+            loss: args.loss,
+            hidden_dims: args.hidden_dims,
+            evaluation_interval: args.evaluation_interval,
+            evaluation_episodes: args.evaluation_episodes,
+            evaluation_max_steps: args.evaluation_max_steps,
+        }
+    }
+}
+
 /// Deep Q learning algorithm using a Burn network.
 pub struct DeepQLearning {
     config: DqnConfig,
-    target_update: TargetUpdate,
     behavior_policy: Option<Box<dyn DiscretePolicy<Observation = Array1<f64>>>>,
 }
 
 impl DeepQLearning {
     pub fn new(config: DqnConfig) -> Result<Self, String> {
         validate_gamma(config.gamma)?;
-        if !config.learning_rate.is_finite()
-            || config.learning_rate <= 0.0
-            || config.learning_rate > 1.0
-        {
-            return Err("learning rate must be finite, positive, and at most one".into());
-        }
-        if !config.final_learning_rate.is_finite()
-            || config.final_learning_rate < 0.0
-            || config.final_learning_rate > config.learning_rate
-        {
-            return Err(
-                "final learning rate must be finite and between zero and the initial learning rate"
-                    .into(),
-            );
-        }
-        if config.batch_size == 0 || config.batch_size > config.replay_capacity {
-            return Err("batch size must be positive and no greater than replay capacity".into());
-        }
-        if config.iterations == 0 || config.hidden_dims == 0 || config.evaluation_interval == 0 {
-            return Err(
-                "iterations, hidden dimensions, and evaluation interval must be positive".into(),
-            );
-        }
-        let target_update = match config.target_update {
-            TargetUpdateMethod::Hard => TargetUpdate::Hard {
-                steps: config.target_sync_steps,
-            },
-            TargetUpdateMethod::Soft => TargetUpdate::Soft {
-                rate: config.target_update_rate,
-            },
-        };
-        match target_update {
-            TargetUpdate::Hard { steps: 0 } => {
-                return Err("target sync steps must be positive".into());
-            }
-            TargetUpdate::Soft { rate } if !rate.is_finite() || rate <= 0.0 || rate > 1.0 => {
-                return Err("target update rate must be finite and between zero and one".into());
-            }
-            _ => {}
-        }
-
-        if config.evaluation_episodes == 0 || config.evaluation_max_steps == 0 {
-            return Err("evaluation episodes and max steps must be positive".into());
-        }
         Ok(Self {
             config,
-            target_update,
             behavior_policy: None,
         })
-    }
-
-    pub fn gamma(&self) -> f64 {
-        self.config.gamma
     }
 
     pub fn with_behavior_policy(
@@ -172,9 +182,9 @@ impl ModelFreeSolver for DeepQLearning {
             .as_deref()
             .unwrap_or(&default_behavior_policy);
 
-        // Collect the fixed off-policy dataset used for training.
+        // fill up initial replay buffer
         let mut buffer = ReplayBuffer::<Array1<f64>, usize>::new(self.config.replay_capacity);
-        for _ in 0..buffer.capacity() {
+        for _ in 0..self.config.warm_up_transitions {
             let a = behavior_policy.sample_action(&s, rng);
             let step = env.step(a, rng);
             let done = step.terminated || step.truncated;
@@ -193,18 +203,8 @@ impl ModelFreeSolver for DeepQLearning {
             };
         }
 
-        let mut trainer = DqnTrainer::new(
-            f_dim,
-            self.config.hidden_dims,
-            n_a,
-            LinearLrSchedulerConfig::new(
-                self.config.learning_rate,
-                self.config.final_learning_rate,
-                self.config.iterations.saturating_sub(1).max(1),
-            )
-            .init()?,
-            rng.random(),
-        );
+        let mut trainer = DqnTrainer::new(f_dim, self.config.hidden_dims, n_a, rng.random());
+        let mut pi = trainer.policy();
 
         let mut snapshots = Vec::new();
         let mut window_loss = 0.0;
@@ -218,44 +218,94 @@ impl ModelFreeSolver for DeepQLearning {
             },
         )?;
 
-        for iter in 0..self.config.iterations {
-            let batch = buffer.sample(self.config.batch_size, rng);
-            let (updated_trainer, loss, learning_rate) = trainer.update(&batch, self.config.gamma);
-            trainer = updated_trainer;
+        let mut iter = 0;
+        let show_progress = std::io::stderr().is_terminal();
+        if show_progress {
+            print_episode_progress(0, self.config.episodes);
+        }
+        for episode in 0..self.config.episodes {
+            let mut s = env.reset(rng);
+            let learning_rate = self.config.learning_rate.value(episode);
 
-            match self.target_update {
-                TargetUpdate::Hard { steps } if (iter + 1) % steps == 0 => {
-                    trainer.sync_target();
+            for step_index in 0.. {
+                let epsilon = self.config.epsilon_schedule.value(iter);
+                let a = pi.epsilon_greedy_action(&s, epsilon, rng);
+                let step = env.step(a, rng);
+
+                buffer.push(Transition {
+                    state: s,
+                    action: a,
+                    reward: step.reward,
+                    next_state: step.observation.clone(),
+                    terminated: step.terminated,
+                });
+
+                s = step.observation;
+
+                let batch = buffer.sample(self.config.batch_size, rng);
+                let (new_trainer, loss) =
+                    trainer.update(&batch, learning_rate, self.config.gamma, self.config.loss);
+                trainer = new_trainer;
+                pi = trainer.policy();
+
+                match self.config.target_update {
+                    TargetUpdateConfig::Hard { steps } if (iter + 1) % steps == 0 => {
+                        trainer.sync_target();
+                    }
+                    TargetUpdateConfig::Soft { rate } => {
+                        trainer.soft_update_target(rate);
+                    }
+                    _ => {}
                 }
-                TargetUpdate::Soft { rate } => trainer.soft_update_target(rate),
-                _ => {}
+
+                iter += 1;
+                window_loss += loss;
+                window_updates += 1;
+
+                if step.terminated
+                    || step.truncated
+                    || self
+                        .config
+                        .episode_length
+                        .is_some_and(|length| step_index + 1 == length)
+                {
+                    break;
+                }
             }
 
-            window_loss += loss;
-            window_updates += 1;
-
-            if (iter + 1) % self.config.evaluation_interval == 0
-                || iter + 1 == self.config.iterations
+            if (episode + 1) % self.config.evaluation_interval == 0
+                || episode + 1 == self.config.episodes
             {
-                let policy = trainer.policy();
                 snapshots.push(
-                    SolverSnapshot::new(iter + 1)
+                    SolverSnapshot::new(iter)
+                        .episode(episode + 1)
                         .learning_rate(learning_rate)
                         .average_loss(window_loss / window_updates as f64)
-                        .evaluate_policy(env, &policy, evaluation, &mut evaluation_rng)?,
+                        .evaluate_policy(env, &pi, evaluation, &mut evaluation_rng)?,
                 );
                 window_loss = 0.0;
                 window_updates = 0;
+            }
+            if show_progress {
+                print_episode_progress(episode + 1, self.config.episodes);
             }
         }
 
         Ok(SolveResult {
             policy: Box::new(trainer.into_policy()),
             snapshots,
-            status: SolveStatus::IterationLimit {
-                iterations: self.config.iterations,
-            },
+            status: SolveStatus::IterationLimit { iterations: iter },
         })
+    }
+}
+
+fn print_episode_progress(episode: usize, episodes: usize) {
+    const WIDTH: usize = 30;
+    let filled = WIDTH * episode / episodes;
+    let bar = format!("{}{}", "=".repeat(filled), " ".repeat(WIDTH - filled));
+    eprint!("\rEpisodes [{bar}] {episode}/{episodes}");
+    if episode == episodes {
+        eprintln!();
     }
 }
 

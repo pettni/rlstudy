@@ -1,10 +1,10 @@
+use super::replay_buffer::Transition;
+use crate::network::loss::Loss;
 use crate::network::mlp::MlpModel;
 use crate::policy::dq::{DeepQPolicy, DeepQPolicyMode};
-use crate::replay_buffer::Transition;
 use burn::{
     Tensor,
     backend::{Autodiff, Flex, flex::FlexDevice},
-    lr_scheduler::{LrScheduler, linear::LinearLrScheduler},
     module::AutodiffModule,
     optim::{Adam, AdamConfig, GradientsParams, Optimizer, adaptor::OptimizerAdaptor},
     tensor::{Int, TensorData, backend::Backend},
@@ -64,7 +64,6 @@ pub(super) struct DqnTrainer {
     optimizer: OptimizerAdaptor<Adam, MlpModel<TrainingBackend>, TrainingBackend>,
     device: FlexDevice,
     feature_dim: usize,
-    learning_rate_scheduler: LinearLrScheduler,
 }
 
 impl DqnTrainer {
@@ -72,7 +71,6 @@ impl DqnTrainer {
         feature_dim: usize,
         hidden_dim: usize,
         num_actions: usize,
-        learning_rate_scheduler: LinearLrScheduler,
         seed: u64,
     ) -> Self {
         let device = FlexDevice;
@@ -85,15 +83,16 @@ impl DqnTrainer {
             optimizer: AdamConfig::new().init(),
             device,
             feature_dim,
-            learning_rate_scheduler,
         }
     }
 
     pub(super) fn update(
         mut self,
         batch: &[Transition<Array1<f64>, usize>],
+        learning_rate: f64,
         gamma: f64,
-    ) -> (Self, f64, f64) {
+        loss: Loss,
+    ) -> (Self, f64) {
         let batch_size = batch.len();
         let batch = TrainingBatch::new(batch, self.feature_dim, &self.device);
 
@@ -111,7 +110,7 @@ impl DqnTrainer {
                     .max_dim(1)
                     .squeeze_dim(1)
                     .detach();
-        let loss = (target - predicted).powf_scalar(2.0).mean();
+        let loss = loss.forward(predicted, target);
         let loss_value = loss
             .clone()
             .into_data()
@@ -120,9 +119,8 @@ impl DqnTrainer {
             .expect("loss tensor has one element");
         let gradients = GradientsParams::from_grads(loss.backward(), &self.online);
 
-        let learning_rate = self.learning_rate_scheduler.step();
         self.online = self.optimizer.step(learning_rate, self.online, gradients);
-        (self, loss_value, learning_rate)
+        (self, loss_value)
     }
 
     pub(super) fn sync_target(&mut self) {

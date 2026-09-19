@@ -105,9 +105,10 @@ pub fn grid_world_impl(spec: GridWorldSpec) -> Result<TabularModel, String> {
         Action::new("stay"),
     ];
 
+    let feature_scale = if n == 1 { 1.0 } else { (n - 1) as f64 };
     let features = Array2::from_shape_fn((n_s, 2), |(s, i)| -> f64 {
         let (row, col) = idx_to_coords(s, n);
-        [row as f64, col as f64][i] / (n - 1) as f64
+        [row as f64, col as f64][i] / feature_scale
     });
 
     let initial_distribution: Distribution<usize> = match spec.initial_distribution {
@@ -263,6 +264,23 @@ r_other: 0
         for state in 0..4 {
             assert_eq!(model.initial_distribution().probability_of(&state), 0.25);
         }
+    }
+
+    #[test]
+    fn single_cell_grid_has_finite_features() {
+        let spec = GridWorldSpec {
+            side: 1,
+            initial_distribution: InitialDistribution::Fixed { state: (0, 0) },
+            forbidden_states: vec![],
+            goal_states: vec![(0, 0)],
+            r_boundary: -1.0,
+            r_forbidden: -2.0,
+            r_target: 3.0,
+            r_other: 0.0,
+        };
+        let model = grid_world_impl(spec).unwrap();
+
+        assert_eq!(model.state_features(0).unwrap().to_vec(), vec![0.0, 0.0]);
     }
 
     #[test]

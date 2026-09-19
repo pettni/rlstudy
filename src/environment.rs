@@ -6,7 +6,7 @@ use ndarray::Array1;
 #[derive(Debug, Clone, PartialEq)]
 pub enum Space {
     Discrete { size: usize },
-    Continuous { low: Array1<f64>, high: Array1<f64> },
+    Continuous { dim: usize },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -81,8 +81,7 @@ impl Environment for TabularEnvironment<'_> {
 /// A tabular environment observed through its state-feature vectors.
 pub struct FeatureEnvironment<'a> {
     environment: TabularEnvironment<'a>,
-    low: Array1<f64>,
-    high: Array1<f64>,
+    dim: usize,
 }
 
 impl<'a> FeatureEnvironment<'a> {
@@ -90,25 +89,10 @@ impl<'a> FeatureEnvironment<'a> {
         let first = model
             .state_features(0)
             .ok_or_else(|| "model has no state features".to_string())?;
-        let mut low = first.to_owned();
-        let mut high = first.to_owned();
-
-        for state in 1..model.states().len() {
-            for (feature, value) in model
-                .state_features(state)
-                .expect("model feature rows have a common shape")
-                .iter()
-                .enumerate()
-            {
-                low[feature] = low[feature].min(*value);
-                high[feature] = high[feature].max(*value);
-            }
-        }
 
         Ok(Self {
             environment: TabularEnvironment::new(model)?,
-            low,
-            high,
+            dim: first.len(),
         })
     }
 
@@ -126,10 +110,7 @@ impl Environment for FeatureEnvironment<'_> {
     type Action = usize;
 
     fn state_space(&self) -> Space {
-        Space::Continuous {
-            low: self.low.clone(),
-            high: self.high.clone(),
-        }
+        Space::Continuous { dim: self.dim }
     }
 
     fn action_space(&self) -> Space {
@@ -256,13 +237,7 @@ mod tests {
         let mut rng = StdRng::seed_from_u64(0);
 
         assert_eq!(environment.reset(&mut rng).to_vec(), vec![1.0, 2.0]);
-        assert_eq!(
-            environment.state_space(),
-            Space::Continuous {
-                low: Array1::from_vec(vec![1.0, 2.0]),
-                high: Array1::from_vec(vec![1.0, 2.0]),
-            }
-        );
+        assert_eq!(environment.state_space(), Space::Continuous { dim: 2 });
     }
 
     #[test]

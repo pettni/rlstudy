@@ -1,7 +1,8 @@
 use clap::Subcommand;
 use rlstudy::algorithms::{
-    DeepQLearning, DqnConfig, MonteCarlo, MonteCarloConfig, PolicyIterationConfig, TD, TDConfig,
-    TDVariant, TruncatedPolicyIteration, TruncatedPolicyIterationConfig, ValueIterationConfig,
+    DeepQLearning, DqnArgs, MonteCarlo, MonteCarloConfig, PolicyIterationConfig, Reinforce,
+    ReinforceConfig, TD, TDConfig, TruncatedPolicyIteration, TruncatedPolicyIterationConfig,
+    ValueIterationConfig,
 };
 use serde::{Serialize, de::DeserializeOwned};
 use std::{fs, path::Path};
@@ -10,25 +11,23 @@ use std::{fs, path::Path};
 pub(super) enum Solver {
     VI(ValueIterationConfig),
     PI(PolicyIterationConfig),
-    TPI(TruncatedPolicyIterationConfig),
+    Tpi(TruncatedPolicyIterationConfig),
     MC(MonteCarloConfig),
     TD(TDConfig),
-    DQN(DqnConfig),
+    Dqn(DqnArgs),
+    Reinforce(ReinforceConfig),
 }
 
 impl Solver {
-    pub(super) fn name(&self) -> &'static str {
+    pub(super) fn as_str(&self) -> &'static str {
         match self {
-            Self::VI(_) => "value-iteration",
-            Self::PI(_) => "policy-iteration",
-            Self::TPI(_) => "truncated-policy-iteration",
-            Self::MC(_) => "monte-carlo",
-            Self::TD(config) => match config.variant {
-                TDVariant::Sarsa => "sarsa",
-                TDVariant::ExpectedSarsa => "expected-sarsa",
-                TDVariant::QLearning => "q-learning",
-            },
-            Self::DQN(_) => "dqn",
+            Self::VI(_) => "vi",
+            Self::PI(_) => "pi",
+            Self::Tpi(_) => "tpi",
+            Self::MC(_) => "mc",
+            Self::TD(_) => "td",
+            Self::Dqn(_) => "dqn",
+            Self::Reinforce(_) => "reinforce",
         }
     }
 }
@@ -37,7 +36,8 @@ pub(super) enum SelectedSolver {
     ModelBased(TruncatedPolicyIteration),
     MonteCarlo(MonteCarlo),
     TD(TD),
-    DQN(DeepQLearning),
+    Dqn(DeepQLearning),
+    Reinforce(Reinforce),
 }
 
 pub(super) fn build_solver(
@@ -59,7 +59,7 @@ pub(super) fn build_solver(
                 parameters,
             ))
         }
-        Solver::TPI(config) => {
+        Solver::Tpi(config) => {
             let (config, parameters) = resolve_config(config, config_path)?;
             Ok((
                 SelectedSolver::ModelBased(TruncatedPolicyIteration::new(config)?),
@@ -77,9 +77,20 @@ pub(super) fn build_solver(
             let (config, parameters) = resolve_config(config, config_path)?;
             Ok((SelectedSolver::TD(TD::new(config)?), parameters))
         }
-        Solver::DQN(config) => {
+        Solver::Dqn(args) => {
+            let config = match config_path {
+                Some(path) => read_config(path)?,
+                None => args.clone().into(),
+            };
+            let parameters = serde_json::to_value(&config)?;
+            Ok((SelectedSolver::Dqn(DeepQLearning::new(config)?), parameters))
+        }
+        Solver::Reinforce(config) => {
             let (config, parameters) = resolve_config(config, config_path)?;
-            Ok((SelectedSolver::DQN(DeepQLearning::new(config)?), parameters))
+            Ok((
+                SelectedSolver::Reinforce(Reinforce::new(config)?),
+                parameters,
+            ))
         }
     }
 }
@@ -92,10 +103,7 @@ where
     T: Clone + DeserializeOwned + Serialize,
 {
     let config = if let Some(path) = path {
-        let contents = fs::read_to_string(path)
-            .map_err(|error| format!("failed to read solver config {}: {error}", path.display()))?;
-        yaml_serde::from_str(&contents)
-            .map_err(|error| format!("failed to parse solver config {}: {error}", path.display()))?
+        read_config(path)?
     } else {
         config.clone()
     };
@@ -103,28 +111,43 @@ where
     Ok((config, parameters))
 }
 
+fn read_config<T>(path: &Path) -> Result<T, Box<dyn std::error::Error>>
+where
+    T: DeserializeOwned,
+{
+    let contents = fs::read_to_string(path)
+        .map_err(|error| format!("failed to read solver config {}: {error}", path.display()))?;
+    yaml_serde::from_str(&contents).map_err(|error| {
+        format!("failed to parse solver config {}: {error}", path.display()).into()
+    })
+}
+
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use rlstudy::algorithms::DqnConfig;
 
     #[test]
     fn dqn_yaml_uses_defaults_for_missing_fields() {
-        let config: DqnConfig = yaml_serde::from_str("learning_rate: 0.1").unwrap();
+        let config: DqnConfig =
+            yaml_serde::from_str("learning_rate:\n  type: constant\n  value: 0.1").unwrap();
 
-        assert_eq!(config.learning_rate, 0.1);
+        assert_eq!(
+            config.learning_rate,
+            rlstudy::algorithms::Schedule::Constant { value: 0.1 }
+        );
         assert_eq!(config.replay_capacity, 1_000);
+        assert_eq!(config.episode_length, None);
         assert_eq!(config.evaluation_episodes, 10);
     }
 
     #[test]
     fn dqn_yaml_selects_soft_target_updates() {
         let config: DqnConfig =
-            yaml_serde::from_str("target_update: soft\ntarget_update_rate: 0.01").unwrap();
+            yaml_serde::from_str("target_update:\n  type: soft\n  rate: 0.01").unwrap();
 
         assert_eq!(
             config.target_update,
-            rlstudy::algorithms::TargetUpdateMethod::Soft
+            rlstudy::algorithms::TargetUpdateConfig::Soft { rate: 0.01 }
         );
-        assert_eq!(config.target_update_rate, 0.01);
     }
 }

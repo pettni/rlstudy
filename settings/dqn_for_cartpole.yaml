@@ -1,0 +1,21 @@
+gamma: 0.99
+learning_rate:
+  type: constant
+  value: 0.001
+batch_size: 64
+replay_capacity: 10000
+warm_up_transitions: 1000
+episodes: 600
+epsilon_schedule:
+  type: linear
+  initial: 1.0
+  final_value: 0.05
+  steps: 20000
+target_update:
+  type: soft
+  rate: 0.002
+loss: l2
+hidden_dims: 64
+evaluation_interval: 10
+evaluation_episodes: 10
+evaluation_max_steps: 500

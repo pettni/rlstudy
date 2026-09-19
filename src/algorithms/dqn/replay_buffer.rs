@@ -30,10 +30,6 @@ impl<State, Action> ReplayBuffer<State, Action> {
         self.transitions.push_back(transition)
     }
 
-    pub fn capacity(&self) -> usize {
-        self.capacity
-    }
-
     pub fn sample(
         &self,
         batch_size: usize,

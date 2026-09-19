@@ -1,11 +1,21 @@
 gamma: 0.9
-learning_rate: 0.05
-final_learning_rate: 0.001
+learning_rate:
+  type: linear
+  initial: 0.05
+  final_value: 0.001
+  steps: 5000
 batch_size: 1024
 replay_capacity: 10000
-iterations: 5000
-target_update: soft
-target_update_rate: 0.005
+warm_up_transitions: 10000
+episodes: 5000
+episode_length: 1000
+epsilon_schedule:
+  type: constant
+  value: 0.9
+target_update:
+  type: soft
+  rate: 0.005
+loss: huber
 hidden_dims: 100
 evaluation_interval: 50
 evaluation_episodes: 10

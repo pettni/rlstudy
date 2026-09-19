@@ -21,12 +21,12 @@ impl GymEnvironment {
             let action_space = bound.getattr("action_space")?;
 
             let low = extract_vector(&observation_space.getattr("low")?)?;
-            let high = extract_vector(&observation_space.getattr("high")?)?;
+            let _high = extract_vector(&observation_space.getattr("high")?)?;
             let num_actions = action_space.getattr("n")?.extract()?;
 
             Ok(Self {
                 env,
-                observation_space: Space::Continuous { low, high },
+                observation_space: Space::Continuous { dim: low.len() },
                 action_space: Space::Discrete { size: num_actions },
             })
         })
