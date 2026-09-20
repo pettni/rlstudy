@@ -7,6 +7,7 @@ use crate::policy::{
 };
 use crate::reporting::{AbstractReporter, Step};
 use crate::schedule::Schedule;
+use burn::grad_clipping::GradientClippingConfig;
 use burn::{
     Tensor,
     backend::{Autodiff, Flex, flex::FlexDevice},
@@ -36,6 +37,8 @@ pub struct ReinforceConfig {
     pub episodes: usize,
     #[arg(long, default_value_t = ReinforceConfig::default().episode_length)]
     pub episode_length: usize,
+    #[arg(long)]
+    gradient_clip_value: Option<f32>,
 }
 
 impl Default for ReinforceConfig {
@@ -50,6 +53,7 @@ impl Default for ReinforceConfig {
             hidden_dims: 64,
             episodes: 1_000,
             episode_length: 100,
+            gradient_clip_value: None,
         }
     }
 }
@@ -117,7 +121,13 @@ impl ModelFreeSolver for Reinforce {
         <TrainingBackend as Backend>::seed(&device, rng.random());
 
         let mut optimizer: OptimizerAdaptor<Adam, MlpModel<TrainingBackend>, TrainingBackend> =
-            AdamConfig::new().init();
+            AdamConfig::new()
+                .with_grad_clipping(
+                    self.config
+                        .gradient_clip_value
+                        .map(GradientClippingConfig::Value),
+                )
+                .init();
 
         let mut policy_network = MlpModel::new(n_s, self.config.hidden_dims, n_a, &device);
         for episode_index in 0..self.config.episodes {
