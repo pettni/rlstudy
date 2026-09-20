@@ -8,7 +8,7 @@ pub mod policy_iteration;
 pub mod reinforce;
 pub mod td;
 
-pub use dqn::{DeepQLearning, DqnArgs, DqnConfig, Loss, Schedule, TargetUpdateConfig};
+pub use dqn::{DeepQLearning, DqnArgs, DqnConfig, DqnMode, Loss, Schedule, TargetUpdateConfig};
 pub use monte_carlo::{MonteCarlo, MonteCarloConfig};
 pub use policy_iteration::{
     PolicyIterationConfig, StoppingCriterion, TruncatedPolicyIteration,

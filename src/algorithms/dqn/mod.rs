@@ -11,11 +11,21 @@ use crate::evaluation::{EvaluationConfig, EvaluationMode};
 pub use crate::network::loss::Loss;
 use crate::policy::{DiscretePolicy, Policy, uniform::UniformPolicy};
 pub use crate::schedule::Schedule;
-use clap::Args;
+use clap::{Args, ValueEnum};
 use ndarray::Array1;
 use rand::{RngExt, SeedableRng, rngs::StdRng};
 use serde::{Deserialize, Serialize};
 use std::{io::IsTerminal, str::FromStr};
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DqnMode {
+    #[default]
+    /// actions from target network evaluated by target network (optimistic bias risk)
+    Dqn,
+    /// actions from online network evaluated by target network
+    Ddqn,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
@@ -46,6 +56,7 @@ impl FromStr for TargetUpdateConfig {
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct DqnConfig {
+    pub mode: DqnMode,
     pub gamma: f64,
     pub learning_rate: Schedule,
     pub batch_size: usize,
@@ -56,6 +67,7 @@ pub struct DqnConfig {
     pub epsilon_schedule: Schedule,
     pub target_update: TargetUpdateConfig,
     pub loss: Loss,
+    pub gradient_clip_value: Option<f32>,
     pub hidden_dims: usize,
     pub evaluation_interval: usize,
     pub evaluation_episodes: usize,
@@ -65,6 +77,7 @@ pub struct DqnConfig {
 impl Default for DqnConfig {
     fn default() -> Self {
         Self {
+            mode: DqnMode::default(),
             gamma: 0.9,
             learning_rate: Schedule::Constant { value: 0.001 },
             batch_size: 64,
@@ -75,6 +88,7 @@ impl Default for DqnConfig {
             epsilon_schedule: Schedule::default(),
             target_update: TargetUpdateConfig::default(),
             loss: Loss::default(),
+            gradient_clip_value: None,
             hidden_dims: 64,
             evaluation_interval: 100,
             evaluation_episodes: 10,
@@ -85,6 +99,8 @@ impl Default for DqnConfig {
 
 #[derive(Debug, Clone, PartialEq, Args)]
 pub struct DqnArgs {
+    #[arg(long, value_enum, default_value_t = DqnConfig::default().mode)]
+    mode: DqnMode,
     #[arg(long, default_value_t = DqnConfig::default().gamma)]
     gamma: f64,
     #[arg(long)]
@@ -105,6 +121,8 @@ pub struct DqnArgs {
     target_update: Option<TargetUpdateConfig>,
     #[arg(long, value_enum, default_value_t = DqnConfig::default().loss)]
     loss: Loss,
+    #[arg(long)]
+    gradient_clip_value: Option<f32>,
     #[arg(long, default_value_t = DqnConfig::default().hidden_dims)]
     hidden_dims: usize,
     #[arg(long, default_value_t = DqnConfig::default().evaluation_interval)]
@@ -118,6 +136,7 @@ pub struct DqnArgs {
 impl From<DqnArgs> for DqnConfig {
     fn from(args: DqnArgs) -> Self {
         Self {
+            mode: args.mode,
             gamma: args.gamma,
             learning_rate: args
                 .learning_rate
@@ -130,6 +149,7 @@ impl From<DqnArgs> for DqnConfig {
             epsilon_schedule: args.epsilon_schedule.unwrap_or_default(),
             target_update: args.target_update.unwrap_or_default(),
             loss: args.loss,
+            gradient_clip_value: args.gradient_clip_value,
             hidden_dims: args.hidden_dims,
             evaluation_interval: args.evaluation_interval,
             evaluation_episodes: args.evaluation_episodes,
@@ -203,7 +223,14 @@ impl ModelFreeSolver for DeepQLearning {
             };
         }
 
-        let mut trainer = DqnTrainer::new(f_dim, self.config.hidden_dims, n_a, rng.random());
+        let mut trainer = DqnTrainer::new(
+            f_dim,
+            self.config.hidden_dims,
+            n_a,
+            self.config.gradient_clip_value,
+            self.config.mode,
+            rng.random(),
+        );
         let mut pi = trainer.policy();
 
         let mut snapshots = Vec::new();

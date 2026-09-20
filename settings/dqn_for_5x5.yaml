@@ -1,3 +1,4 @@
+mode: dqn
 gamma: 0.9
 learning_rate:
   type: linear
@@ -16,6 +17,7 @@ target_update:
   type: soft
   rate: 0.005
 loss: huber
+gradient_clip_value: 100.0
 hidden_dims: 100
 evaluation_interval: 50
 evaluation_episodes: 10

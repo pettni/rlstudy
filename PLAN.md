@@ -91,7 +91,7 @@ Read all ten chapters in order. Pair each major concept with a bounded teaching 
 - [x] **Chapter 7:** one-step Sarsa, Expected Sarsa, and Zhao's on-policy Q-learning.
 - [x] **Chapter 7:** derive and understand n-step Sarsa; implementation intentionally skipped.
 - [ ] **Chapter 8:** value-function approximation with simple linear features.
-- [ ] **Chapter 8:** personally implement a minimal Burn DQN on CartPole, using the prototype only as a reference after making an independent attempt.
+- [x] **Chapter 8:** personally implement a minimal Burn DQN on CartPole, using the prototype only as a reference after making an independent attempt.
 - [ ] **Chapter 9:** REINFORCE, then add a learned baseline.
 - [ ] **Chapter 10:** one-step actor–critic.
 
