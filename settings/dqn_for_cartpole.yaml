@@ -18,6 +18,3 @@ target_update:
 loss: l2
 gradient_clip_value: 100.0
 hidden_dims: 64
-evaluation_interval: 10
-evaluation_episodes: 10
-evaluation_max_steps: 500

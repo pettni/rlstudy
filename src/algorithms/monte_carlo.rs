@@ -1,10 +1,9 @@
-use crate::algorithms::{
-    ModelFreeSolver, SolveResult, SolveStatus, SolverSnapshot, validate_gamma,
-};
+use crate::algorithms::{ModelFreeSolver, SolveResult, SolveStatus, validate_gamma};
 use crate::environment::{Environment, Space};
 use crate::policy::{Policy, PolicyObjective, TabularPolicy};
+use crate::reporting::{AbstractReporter, Step};
 use clap::Args;
-use ndarray::{Array2, Axis};
+use ndarray::Array2;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Args, Deserialize, Serialize)]
@@ -13,9 +12,9 @@ pub struct MonteCarloConfig {
     #[arg(long, default_value_t = MonteCarloConfig::default().gamma)]
     pub gamma: f64,
     #[arg(long, default_value_t = MonteCarloConfig::default().episodes)]
-    pub episodes: u64,
+    pub episodes: usize,
     #[arg(long, default_value_t = MonteCarloConfig::default().episode_length)]
-    pub episode_length: u64,
+    pub episode_length: usize,
     #[arg(long, default_value_t = MonteCarloConfig::default().epsilon)]
     pub epsilon: f64,
 }
@@ -55,11 +54,12 @@ impl MonteCarlo {
 impl ModelFreeSolver for MonteCarlo {
     type Observation = usize;
 
-    fn solve(
+    fn solve_with_reporter(
         &self,
         env: &mut dyn Environment<Observation = usize, Action = usize>,
         rng: &mut dyn rand::Rng,
-    ) -> Result<crate::algorithms::TabularSolveResult, String> {
+        reporter: &mut dyn AbstractReporter<usize>,
+    ) -> Result<SolveResult<usize>, String> {
         let Space::Discrete { size: n_s } = env.state_space() else {
             return Err("Monte Carlo requires a discrete state space".into());
         };
@@ -75,7 +75,7 @@ impl ModelFreeSolver for MonteCarlo {
         // policy
         let mut pi = TabularPolicy::uniform(n_s, n_a).unwrap();
 
-        for _e in 0..self.config.episodes {
+        for episode_number in 1..=self.config.episodes {
             let s0 = env.reset(rng);
 
             // generate [(s0, a0, r0), (s1, a1, r1), ..., (sT-1, aT-1, rT-1)]
@@ -92,6 +92,9 @@ impl ModelFreeSolver for MonteCarlo {
                 .collect::<Vec<_>>();
 
             // update state-action rewards and counts from episode
+            let episode_length: f64 = episode.len() as f64;
+            let episode_return: f64 = episode.iter().map(|(_, _, reward)| reward).sum();
+
             let returns = episode.into_iter().rev().scan(0.0, |g, (s, a, r)| {
                 *g = r + self.config.gamma * *g;
                 Some((s, a, *g))
@@ -109,20 +112,21 @@ impl ModelFreeSolver for MonteCarlo {
                 &q_sa,
                 PolicyObjective::SoftDeterministic(self.config.epsilon),
             )?;
+            reporter.record(
+                Step::Episode(episode_number),
+                &[
+                    ("train/return", episode_return),
+                    ("train/length", episode_length),
+                ],
+            );
+            reporter.policy(Step::Episode(episode_number), &mut || Box::new(pi.clone()));
         }
-
-        // value under the final epsilon-soft policy
-        let value = (&pi.probabilities() * &q_sa).sum_axis(Axis(1)).to_vec();
-        let iterations = self
-            .config
-            .episodes
-            .try_into()
-            .map_err(|_| "episode count does not fit usize")?;
 
         Ok(SolveResult {
             policy: Box::new(pi),
-            snapshots: vec![SolverSnapshot::new(iterations).state_values(value)],
-            status: SolveStatus::IterationLimit { iterations },
+            status: SolveStatus::IterationLimit {
+                iterations: self.config.episodes,
+            },
         })
     }
 }

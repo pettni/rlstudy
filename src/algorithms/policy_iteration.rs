@@ -1,8 +1,7 @@
-use crate::algorithms::{
-    ModelBasedSolver, SolveResult, SolveStatus, SolverSnapshot, validate_gamma,
-};
+use crate::algorithms::{ModelBasedSolver, SolveResult, SolveStatus, validate_gamma};
 use crate::model::TabularModel;
 use crate::policy::TabularPolicy;
+use crate::reporting::{AbstractReporter, Step};
 use clap::Args;
 use ndarray::{Array1, Array2, Array3};
 use num_traits::abs;
@@ -180,48 +179,49 @@ impl TruncatedPolicyIteration {
 impl ModelBasedSolver for TruncatedPolicyIteration {
     type Observation = usize;
 
-    fn solve(&self, model: &TabularModel) -> Result<crate::algorithms::TabularSolveResult, String> {
+    fn solve_with_reporter(
+        &self,
+        model: &TabularModel,
+        reporter: &mut dyn AbstractReporter<usize>,
+    ) -> Result<SolveResult<usize>, String> {
         let n_s = model.states().len();
         let n_a = model.actions().len();
-        let mut snapshots = vec![
-            SolverSnapshot::new(0)
-                .policy_iteration(0)
-                .evaluation_sweep(0)
-                .state_values(vec![0.0; n_s])
-                .state_value(0.0),
-        ];
 
         let mut pi = TabularPolicy::uniform(n_s, n_a).expect("model has states and actions");
-        let mut v_pi = policy_evaluation(
+        let (_, mut v_pi) = policy_evaluation(
             model,
             &pi,
             &Array1::<f64>::zeros(pi.num_states()),
             self.gamma,
             &self.inner,
-            0,
-            &mut snapshots,
         );
 
         for iter in 1.. {
             let new_pi = improve_policy(model, &v_pi, self.gamma);
-            let new_v_pi = policy_evaluation(
-                model,
-                &new_pi,
-                &v_pi,
-                self.gamma,
-                &self.inner,
-                iter,
-                &mut snapshots,
-            );
+            let (v_pi_iters, new_v_pi) =
+                policy_evaluation(model, &new_pi, &v_pi, self.gamma, &self.inner);
             let status = self.outer.stop_reason(iter, &v_pi, &new_v_pi);
 
             pi = new_pi;
             v_pi = new_v_pi;
 
+            let initial_value = model
+                .initial_distribution()
+                .iter()
+                .map(|(probability, state)| probability * v_pi[*state])
+                .sum();
+            reporter.record(
+                Step::Iteration(iter),
+                &[
+                    ("value/initial", initial_value),
+                    ("value/iters", v_pi_iters as f64),
+                ],
+            );
+            reporter.policy(Step::Iteration(iter), &mut || Box::new(pi.clone()));
+
             if let Some(status) = status {
                 return Ok(SolveResult {
                     policy: Box::new(pi),
-                    snapshots,
                     status,
                 });
             }
@@ -251,9 +251,7 @@ fn policy_evaluation(
     v_last: &Array1<f64>,
     gamma: f64,
     sc: &StoppingCriterion,
-    policy_iteration: usize,
-    snapshots: &mut Vec<SolverSnapshot>,
-) -> Array1<f64> {
+) -> (usize, Array1<f64>) {
     // R_pi(s)
     let r_pi_s = policy_reward(model, pi);
     // P_pi(s)
@@ -264,25 +262,36 @@ fn policy_evaluation(
     for iter in 1.. {
         // V_pi(s) = r_pi(s) + γ * sum_{s'} P_pi(s,s') v(s')
         let new_v_pi = &r_pi_s + gamma * p_pi_s_s.dot(&v_pi);
-        let evaluation_sweep = snapshots.len();
-        let state_value = (0..model.states().len())
-            .map(|state| model.initial_distribution().probability_of(&state) * new_v_pi[state])
-            .sum();
-        snapshots.push(
-            SolverSnapshot::new(evaluation_sweep)
-                .policy_iteration(policy_iteration)
-                .evaluation_sweep(evaluation_sweep)
-                .state_values(new_v_pi.to_vec())
-                .state_value(state_value),
-        );
         if sc.stop_reason(iter, &v_pi, &new_v_pi).is_some() {
-            return new_v_pi;
+            return (iter, new_v_pi);
         }
 
         v_pi = new_v_pi;
     }
 
     unreachable!()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::environments::grid_world;
+
+    #[test]
+    fn one_inner_iteration_runs_one_bellman_sweep() {
+        let model = grid_world(3).unwrap();
+        let policy = TabularPolicy::uniform(model.states().len(), model.actions().len()).unwrap();
+        let (sweeps, values) = policy_evaluation(
+            &model,
+            &policy,
+            &Array1::zeros(model.states().len()),
+            0.5,
+            &StoppingCriterion::iterations(1).unwrap(),
+        );
+
+        assert_eq!(sweeps, 1);
+        assert_eq!(values, policy_reward(&model, &policy));
+    }
 }
 
 fn improve_policy(model: &TabularModel, v_s: &Array1<f64>, gamma: f64) -> TabularPolicy {

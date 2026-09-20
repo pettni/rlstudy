@@ -19,6 +19,3 @@ target_update:
 loss: huber
 gradient_clip_value: 100.0
 hidden_dims: 100
-evaluation_interval: 50
-evaluation_episodes: 10
-evaluation_max_steps: 1000

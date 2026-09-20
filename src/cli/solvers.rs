@@ -125,6 +125,7 @@ where
 #[cfg(test)]
 mod tests {
     use rlstudy::algorithms::DqnConfig;
+    use rlstudy::algorithms::ReinforceConfig;
 
     #[test]
     fn dqn_yaml_uses_defaults_for_missing_fields() {
@@ -137,7 +138,6 @@ mod tests {
         );
         assert_eq!(config.replay_capacity, 1_000);
         assert_eq!(config.episode_length, None);
-        assert_eq!(config.evaluation_episodes, 10);
     }
 
     #[test]
@@ -149,5 +149,24 @@ mod tests {
             config.target_update,
             rlstudy::algorithms::TargetUpdateConfig::Soft { rate: 0.01 }
         );
+    }
+
+    #[test]
+    fn checked_in_reinforce_config_parses() {
+        let config: ReinforceConfig =
+            yaml_serde::from_str(include_str!("../../settings/reinforce_for_cartpole.yaml"))
+                .unwrap();
+
+        assert_eq!(config.gamma, 1.0);
+        assert_eq!(config.hidden_dims, 16);
+        assert_eq!(config.episodes, 2500);
+        assert_eq!(
+            config.learning_rate,
+            rlstudy::algorithms::Schedule::Stepwise {
+                initial: 0.01,
+                changes: vec![(500, 0.0005), (1500, 0.0001)],
+            }
+        );
+        assert!(rlstudy::algorithms::Reinforce::new(config).is_ok());
     }
 }

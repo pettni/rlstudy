@@ -101,7 +101,7 @@ impl DqnTrainer {
         learning_rate: f64,
         gamma: f64,
         loss: Loss,
-    ) -> (Self, f64) {
+    ) -> (Self, f64, f64) {
         let batch_size = batch.len();
         let batch = TrainingBatch::new(batch, self.feature_dim, &self.device);
 
@@ -128,9 +128,10 @@ impl DqnTrainer {
             .next()
             .expect("loss tensor has one element");
         let gradients = GradientsParams::from_grads(loss.backward(), &self.online);
+        let gradient_norm = self.online.gradient_norm(&gradients);
 
         self.online = self.optimizer.step(learning_rate, self.online, gradients);
-        (self, loss_value)
+        (self, loss_value, gradient_norm)
     }
 
     pub(super) fn sync_target(&mut self) {
@@ -143,6 +144,10 @@ impl DqnTrainer {
 
     pub(super) fn policy_view(&self) -> DeepQPolicy<TrainingBackend, &MlpModel<TrainingBackend>> {
         DeepQPolicy::borrowed(&self.online, DeepQPolicyMode::Greedy)
+    }
+
+    pub(super) fn inference_model(&self) -> MlpModel<Flex> {
+        self.online.valid()
     }
 
     pub(super) fn into_policy(self) -> DeepQPolicy {

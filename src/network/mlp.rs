@@ -1,8 +1,13 @@
 /// Trivial MLP model
 use burn::{
+    module::ParamId,
     module::{Module, Param},
     nn::{Linear, LinearConfig, Relu},
-    tensor::{Tensor, backend::Backend},
+    optim::GradientsParams,
+    tensor::{
+        Tensor,
+        backend::{AutodiffBackend, Backend},
+    },
 };
 
 #[derive(Module, Debug)]
@@ -10,6 +15,28 @@ pub struct MlpModel<B: Backend> {
     l1: Linear<B>,
     act: Relu,
     l2: Linear<B>,
+}
+
+impl<B: AutodiffBackend> MlpModel<B> {
+    pub fn gradient_norm(&self, gradients: &GradientsParams) -> f64 {
+        let norm_squared = gradient_squared::<B::InnerBackend, 2>(gradients, self.l1.weight.id)
+            + gradient_squared::<B::InnerBackend, 1>(gradients, self.l1.bias.as_ref().unwrap().id)
+            + gradient_squared::<B::InnerBackend, 2>(gradients, self.l2.weight.id)
+            + gradient_squared::<B::InnerBackend, 1>(gradients, self.l2.bias.as_ref().unwrap().id);
+        norm_squared.sqrt()
+    }
+}
+
+fn gradient_squared<B: Backend, const D: usize>(gradients: &GradientsParams, id: ParamId) -> f64 {
+    gradients
+        .get::<B, D>(id)
+        .unwrap()
+        .square()
+        .sum()
+        .into_data()
+        .iter::<f64>()
+        .next()
+        .unwrap()
 }
 
 impl<B: Backend> MlpModel<B> {

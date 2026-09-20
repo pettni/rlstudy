@@ -4,12 +4,14 @@ mod systems;
 use self::solvers::{SelectedSolver, Solver, build_solver};
 use self::systems::{SelectedSystem, build_system};
 use clap::{Parser, Subcommand};
-use ndarray::Array1;
+use ndarray::{Array1, Array2};
 use rand::{SeedableRng, rngs::StdRng};
-use rlstudy::algorithms::{
-    ModelBasedSolver, ModelFreeSolver, SolveResult, SolverSnapshot, TabularSolveResult,
-};
-use rlstudy::environment::{FeatureEnvironment, TabularEnvironment};
+use rlstudy::algorithms::{ModelBasedSolver, ModelFreeSolver, SolveResult, TabularSolveResult};
+use rlstudy::environment::{Environment, FeatureEnvironment, TabularEnvironment};
+use rlstudy::environments::GymEnvironment;
+use rlstudy::evaluation::{EvaluationStats, fixed_policy_values};
+use rlstudy::model::TabularModel;
+use rlstudy::reporting::{Frequency, HistoryRow, Reporter, ReporterConfig};
 use serde::Serialize;
 use std::path::PathBuf;
 
@@ -22,32 +24,25 @@ struct Args {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Run a solver against a system.
     Solve(SolveArgs),
 }
 
 #[derive(Parser)]
 struct SolveArgs {
-    /// Grid-world YAML file. Omit both system options for the built-in grid world.
     #[arg(long, conflicts_with = "gym")]
     grid_world: Option<PathBuf>,
-
-    /// Gymnasium environment ID.
     #[arg(long, conflicts_with = "grid_world")]
     gym: Option<String>,
-
-    /// Load the selected solver's configuration from YAML.
     #[arg(long)]
     config: Option<PathBuf>,
-
+    #[command(flatten)]
+    reporting: ReporterConfig,
+    #[arg(long, default_value_t = 0.9)]
+    value_gamma: f64,
     #[command(subcommand)]
     solver: Solver,
-
-    /// Write values and greedy policy actions as JSON.
     #[arg(long)]
     json: bool,
-
-    /// Seed for environment, policy, replay sampling, and model initialization.
     #[arg(long, default_value_t = 42)]
     seed: u64,
 }
@@ -59,73 +54,288 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn solve(args: &SolveArgs) -> Result<(), Box<dyn std::error::Error>> {
+    args.reporting.validate()?;
+    if !args.value_gamma.is_finite() || !(0.0..1.0).contains(&args.value_gamma) {
+        return Err("value gamma must be finite and in [0, 1)".into());
+    }
     let mut system = build_system(args.grid_world.as_deref(), args.gym.as_deref())?;
     let (solver, parameters) = build_solver(&args.solver, args.config.as_deref())?;
+    validate_frequency(&solver, args.reporting.evaluation_frequency)?;
     let mut rng = StdRng::seed_from_u64(args.seed);
-    let result = run_solver(solver, &mut system, &mut rng)?;
+    let (result, final_evaluation) = run_solver(
+        solver,
+        &mut system,
+        &mut rng,
+        &args.reporting,
+        args.gym.as_deref(),
+        args.seed ^ 0x6a09_e667_f3bc_c909,
+    )?;
+    let discrete_model = system
+        .as_model()
+        .map(|model| build_discrete_model(model, &result, args.value_gamma))
+        .transpose()?;
 
     if args.json {
-        write_json_result(args, &system, &result, &parameters)?;
+        let grid_world_definition = args
+            .grid_world
+            .as_deref()
+            .and_then(|path| path.to_str())
+            .or_else(|| system.as_model().map(|_| "grid_worlds/zhao_3x3.yaml"));
+        serde_json::to_writer(
+            std::io::stdout(),
+            &VisualizationResult {
+                grid_world_definition,
+                solver: args.solver.as_str(),
+                seed: args.seed,
+                parameters: &parameters,
+                reporting: &args.reporting,
+                history: result.history(),
+                final_evaluation: &final_evaluation,
+                discrete_model,
+            },
+        )?;
+        println!();
     } else {
-        print_result(args, result, &parameters);
+        println!(
+            "solver={} seed={} status={:?}",
+            args.solver.as_str(),
+            args.seed,
+            result.status()
+        );
+        println!(
+            "final_return={:.3}±{:.3} final_length={:.2}",
+            final_evaluation.return_mean,
+            final_evaluation.return_std,
+            final_evaluation.episode_length_mean
+        );
+        if let Some(model) = discrete_model {
+            for (state, (action, value)) in model.actions.iter().zip(&model.values).enumerate() {
+                println!("state {state} [value {value:.3}] -> action {action}");
+            }
+        }
     }
     Ok(())
+}
+
+fn validate_frequency(solver: &SelectedSolver, frequency: Option<Frequency>) -> Result<(), String> {
+    match (solver, frequency) {
+        (SelectedSolver::ModelBased(_), Some(Frequency::PerEpisode(_))) => {
+            Err("model-based solvers support iteration evaluation frequency".into())
+        }
+        (
+            SelectedSolver::MonteCarlo(_) | SelectedSolver::TD(_),
+            Some(Frequency::PerIteration(_)),
+        ) => Err("tabular model-free solvers support episode evaluation frequency".into()),
+        _ => Ok(()),
+    }
 }
 
 fn run_solver(
     solver: SelectedSolver,
     system: &mut SelectedSystem,
     rng: &mut dyn rand::Rng,
-) -> Result<SelectedResult, Box<dyn std::error::Error>> {
-    match &solver {
+    reporting: &ReporterConfig,
+    gym_id: Option<&str>,
+    evaluation_seed: u64,
+) -> Result<(SelectedResult, EvaluationStats), Box<dyn std::error::Error>> {
+    match solver {
         SelectedSolver::ModelBased(solver) => {
             let model = system
                 .as_model()
                 .ok_or("model-based solver requires a model system")?;
-            Ok(SelectedResult::Tabular(solver.solve(model)?))
+            let mut evaluation_environment = TabularEnvironment::new(model)?;
+            let mut reporter = Reporter::new(
+                reporting.clone(),
+                evaluation_seed,
+                Some(&mut evaluation_environment),
+            );
+            let result = solver.solve_with_reporter(model, &mut reporter)?;
+            let stats = reporter.final_evaluation(result.policy.as_ref());
+            Ok((
+                SelectedResult::Tabular(result, reporter.into_history()),
+                stats,
+            ))
         }
         SelectedSolver::MonteCarlo(solver) => {
-            let result = match system {
-                SelectedSystem::Model(model) => {
-                    solver.solve(&mut TabularEnvironment::new(model)?, rng)
-                }
-                SelectedSystem::Gym(_) => return Err("Monte Carlo requires tabular states".into()),
+            let SelectedSystem::Model(model) = system else {
+                return Err("Monte Carlo requires tabular states".into());
             };
-            Ok(SelectedResult::Tabular(result?))
+            let mut environment = TabularEnvironment::new(model)?;
+            let mut evaluation_environment = TabularEnvironment::new(model)?;
+            let (result, history, stats) = run_model_free(
+                &solver,
+                &mut environment,
+                &mut evaluation_environment,
+                rng,
+                reporting,
+                evaluation_seed,
+            )?;
+            Ok((SelectedResult::Tabular(result, history), stats))
         }
         SelectedSolver::TD(solver) => {
-            let result = match system {
-                SelectedSystem::Model(model) => {
-                    solver.solve(&mut TabularEnvironment::new(model)?, rng)
-                }
-                SelectedSystem::Gym(_) => return Err("TD requires tabular states".into()),
+            let SelectedSystem::Model(model) = system else {
+                return Err("TD requires tabular states".into());
             };
-            Ok(SelectedResult::Tabular(result?))
+            let mut environment = TabularEnvironment::new(model)?;
+            let mut evaluation_environment = TabularEnvironment::new(model)?;
+            let (result, history, stats) = run_model_free(
+                &solver,
+                &mut environment,
+                &mut evaluation_environment,
+                rng,
+                reporting,
+                evaluation_seed,
+            )?;
+            Ok((SelectedResult::Tabular(result, history), stats))
         }
         SelectedSolver::Dqn(solver) => {
-            let result = match system {
+            let (result, history, stats) = match system {
                 SelectedSystem::Model(model) => {
-                    solver.solve(&mut FeatureEnvironment::new(model)?, rng)
+                    let mut environment = FeatureEnvironment::new(model)?;
+                    let mut evaluation_environment = FeatureEnvironment::new(model)?;
+                    run_model_free(
+                        &solver,
+                        &mut environment,
+                        &mut evaluation_environment,
+                        rng,
+                        reporting,
+                        evaluation_seed,
+                    )?
                 }
-                SelectedSystem::Gym(environment) => solver.solve(environment, rng),
+                SelectedSystem::Gym(environment) => {
+                    let mut evaluation_environment =
+                        GymEnvironment::new(gym_id.expect("Gym ID is present"))?;
+                    run_model_free(
+                        &solver,
+                        environment,
+                        &mut evaluation_environment,
+                        rng,
+                        reporting,
+                        evaluation_seed,
+                    )?
+                }
             };
-            Ok(SelectedResult::Dqn(result?))
+            Ok((SelectedResult::Neural(result, history), stats))
         }
         SelectedSolver::Reinforce(solver) => {
-            let result = match system {
+            let (result, history, stats) = match system {
                 SelectedSystem::Model(model) => {
-                    solver.solve(&mut FeatureEnvironment::new(model)?, rng)
+                    let mut environment = FeatureEnvironment::new(model)?;
+                    let mut evaluation_environment = FeatureEnvironment::new(model)?;
+                    run_model_free(
+                        &solver,
+                        &mut environment,
+                        &mut evaluation_environment,
+                        rng,
+                        reporting,
+                        evaluation_seed,
+                    )?
                 }
-                SelectedSystem::Gym(environment) => solver.solve(environment, rng),
+                SelectedSystem::Gym(environment) => {
+                    let mut evaluation_environment =
+                        GymEnvironment::new(gym_id.expect("Gym ID is present"))?;
+                    run_model_free(
+                        &solver,
+                        environment,
+                        &mut evaluation_environment,
+                        rng,
+                        reporting,
+                        evaluation_seed,
+                    )?
+                }
             };
-            Ok(SelectedResult::Dqn(result?))
+            Ok((SelectedResult::Neural(result, history), stats))
         }
     }
 }
 
+fn run_model_free<S: ModelFreeSolver>(
+    solver: &S,
+    environment: &mut dyn Environment<Observation = S::Observation, Action = usize>,
+    evaluation_environment: &mut dyn Environment<Observation = S::Observation, Action = usize>,
+    rng: &mut dyn rand::Rng,
+    reporting: &ReporterConfig,
+    evaluation_seed: u64,
+) -> Result<
+    (
+        SolveResult<S::Observation>,
+        Vec<HistoryRow>,
+        EvaluationStats,
+    ),
+    String,
+> {
+    let mut reporter = Reporter::new(
+        reporting.clone(),
+        evaluation_seed,
+        Some(evaluation_environment),
+    );
+    let result = solver.solve_with_reporter(environment, rng, &mut reporter)?;
+    let stats = reporter.final_evaluation(result.policy.as_ref());
+    Ok((result, reporter.into_history(), stats))
+}
+
 enum SelectedResult {
-    Tabular(TabularSolveResult),
-    Dqn(SolveResult<Array1<f64>>),
+    Tabular(TabularSolveResult, Vec<HistoryRow>),
+    Neural(SolveResult<Array1<f64>>, Vec<HistoryRow>),
+}
+
+impl SelectedResult {
+    fn history(&self) -> &[HistoryRow] {
+        match self {
+            Self::Tabular(_, history) | Self::Neural(_, history) => history,
+        }
+    }
+
+    fn status(&self) -> rlstudy::algorithms::SolveStatus {
+        match self {
+            Self::Tabular(result, _) => result.status,
+            Self::Neural(result, _) => result.status,
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct DiscreteModelResult {
+    value_gamma: f64,
+    actions: Vec<usize>,
+    values: Vec<f64>,
+}
+
+fn build_discrete_model(
+    model: &TabularModel,
+    result: &SelectedResult,
+    gamma: f64,
+) -> Result<DiscreteModelResult, String> {
+    let mut probabilities = Array2::zeros((model.states().len(), model.actions().len()));
+    for state in 0..model.states().len() {
+        let row = match result {
+            SelectedResult::Tabular(result, _) => result.policy.action_probabilities(&state),
+            SelectedResult::Neural(result, _) => {
+                let features = model
+                    .state_features(state)
+                    .ok_or("model state features are required for neural policies")?
+                    .to_owned();
+                result.policy.action_probabilities(&features)
+            }
+        };
+        probabilities.row_mut(state).assign(&row);
+    }
+    let actions = probabilities
+        .outer_iter()
+        .map(|row| {
+            row.iter()
+                .enumerate()
+                .max_by(|(_, a), (_, b)| a.total_cmp(b))
+                .map(|(action, _)| action)
+                .expect("model has actions")
+        })
+        .collect();
+    let values = fixed_policy_values(model, &probabilities, gamma)?;
+    Ok(DiscreteModelResult {
+        value_gamma: gamma,
+        actions,
+        values,
+    })
 }
 
 #[derive(Serialize)]
@@ -135,234 +345,91 @@ struct VisualizationResult<'a> {
     solver: &'a str,
     seed: u64,
     parameters: &'a serde_json::Value,
+    reporting: &'a ReporterConfig,
+    history: &'a [HistoryRow],
+    final_evaluation: &'a EvaluationStats,
     #[serde(skip_serializing_if = "Option::is_none")]
-    policy_actions: Option<Vec<usize>>,
-    snapshots: &'a [SolverSnapshot],
-}
-
-fn write_json_result(
-    args: &SolveArgs,
-    system: &SelectedSystem,
-    result: &SelectedResult,
-    parameters: &serde_json::Value,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let model = system.as_model();
-    let grid_world_definition = args
-        .grid_world
-        .as_deref()
-        .and_then(|path| path.to_str())
-        .or_else(|| model.map(|_| "grid_worlds/zhao_3x3.yaml"));
-
-    let (snapshots, policy_actions) = match result {
-        SelectedResult::Tabular(result) => (
-            result.snapshots.as_slice(),
-            Some(
-                (0..result
-                    .snapshots
-                    .last()
-                    .and_then(|snapshot| snapshot.state_values.as_ref())
-                    .map_or(0, Vec::len))
-                    .map(|state| result.policy.greedy_action(&state))
-                    .collect(),
-            ),
-        ),
-        SelectedResult::Dqn(result) => (
-            result.snapshots.as_slice(),
-            model.map(|model| {
-                (0..model.states().len())
-                    .map(|state| {
-                        let observation = model
-                            .state_features(state)
-                            .expect("DQN requires model state features")
-                            .to_owned();
-                        result.policy.greedy_action(&observation)
-                    })
-                    .collect()
-            }),
-        ),
-    };
-
-    serde_json::to_writer(
-        std::io::stdout(),
-        &VisualizationResult {
-            grid_world_definition,
-            solver: args.solver.as_str(),
-            seed: args.seed,
-            parameters,
-            policy_actions,
-            snapshots,
-        },
-    )?;
-    println!();
-    Ok(())
-}
-
-fn print_result(args: &SolveArgs, result: SelectedResult, parameters: &serde_json::Value) {
-    let system = args
-        .gym
-        .as_deref()
-        .or_else(|| args.grid_world.as_deref().and_then(|path| path.to_str()))
-        .unwrap_or("gridworld");
-    println!(
-        "system={} solver={} seed={}",
-        system,
-        args.solver.as_str(),
-        args.seed
-    );
-    println!("parameters={parameters}");
-    match result {
-        SelectedResult::Tabular(result) => {
-            let values = result
-                .snapshots
-                .last()
-                .and_then(|snapshot| snapshot.state_values.as_ref())
-                .expect("tabular solvers return final state values");
-            if let Some(v0) = values.first() {
-                println!("value[0]={:.4}", v0);
-            }
-            println!("iterations={}", result.status.iterations());
-            println!("status={:?}", result.status);
-            println!("policy:");
-            for (s, value) in values.iter().enumerate() {
-                let action = result.policy.greedy_action(&s);
-                println!("  state {} [value {:.3}] -> action {}", s, value, action);
-            }
-            print_snapshots(&result.snapshots);
-        }
-        SelectedResult::Dqn(result) => {
-            println!("iterations={}", result.status.iterations());
-            println!("status={:?}", result.status);
-            print_snapshots(&result.snapshots);
-        }
-    }
-}
-
-fn print_snapshots(snapshots: &[SolverSnapshot]) {
-    for snapshot in snapshots {
-        print!("iteration={}", snapshot.iteration);
-        if let Some(learning_rate) = snapshot.learning_rate {
-            print!(" learning_rate={learning_rate:.6}");
-        }
-        if let Some(average_loss) = snapshot.average_loss {
-            print!(" average_loss={average_loss:.6}");
-        }
-        if let Some(evaluation_return) = snapshot.evaluation_return {
-            print!(" evaluation_return={evaluation_return:.6}");
-        }
-        println!();
-    }
+    discrete_model: Option<DiscreteModelResult>,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use rlstudy::algorithms::{
-        DqnConfig, MonteCarloConfig, PolicyIterationConfig, ReinforceConfig, TDConfig,
-        TruncatedPolicyIterationConfig, ValueIterationConfig,
+        DqnConfig, MonteCarloConfig, ReinforceConfig, TDConfig, ValueIterationConfig,
     };
 
     fn solver(arguments: &[&str]) -> Solver {
-        let args = std::iter::once("rlstudy")
-            .chain(arguments.iter().copied())
-            .collect::<Vec<_>>();
-        let parsed = Args::try_parse_from(args).unwrap();
-        let Commands::Solve(solve) = parsed.command;
-        solve.solver
+        let parsed =
+            Args::try_parse_from(std::iter::once("rlstudy").chain(arguments.iter().copied()))
+                .unwrap();
+        let Commands::Solve(args) = parsed.command;
+        args.solver
     }
 
     #[test]
     fn cli_and_yaml_have_the_same_solver_defaults() {
-        let Solver::VI(cli) = solver(&["solve", "vi"]) else {
+        let Solver::VI(config) = solver(&["solve", "vi"]) else {
             unreachable!()
         };
         assert_eq!(
-            cli,
+            config,
             yaml_serde::from_str::<ValueIterationConfig>("{}").unwrap()
         );
-
-        let Solver::PI(cli) = solver(&["solve", "pi"]) else {
+        let Solver::MC(config) = solver(&["solve", "mc"]) else {
             unreachable!()
         };
         assert_eq!(
-            cli,
-            yaml_serde::from_str::<PolicyIterationConfig>("{}").unwrap()
+            config,
+            yaml_serde::from_str::<MonteCarloConfig>("{}").unwrap()
         );
-
-        let Solver::Tpi(cli) = solver(&["solve", "tpi"]) else {
+        let Solver::TD(config) = solver(&["solve", "td"]) else {
+            unreachable!()
+        };
+        assert_eq!(config, yaml_serde::from_str::<TDConfig>("{}").unwrap());
+        let Solver::Dqn(config) = solver(&["solve", "dqn"]) else {
+            unreachable!()
+        };
+        let config: DqnConfig = config.into();
+        assert_eq!(config, yaml_serde::from_str::<DqnConfig>("{}").unwrap());
+        let Solver::Reinforce(config) = solver(&["solve", "reinforce"]) else {
             unreachable!()
         };
         assert_eq!(
-            cli,
-            yaml_serde::from_str::<TruncatedPolicyIterationConfig>("{}").unwrap()
-        );
-
-        let Solver::MC(cli) = solver(&["solve", "mc"]) else {
-            unreachable!()
-        };
-        assert_eq!(cli, yaml_serde::from_str::<MonteCarloConfig>("{}").unwrap());
-
-        let Solver::TD(cli) = solver(&["solve", "td"]) else {
-            unreachable!()
-        };
-        assert_eq!(cli, yaml_serde::from_str::<TDConfig>("{}").unwrap());
-
-        let Solver::Dqn(cli) = solver(&["solve", "dqn"]) else {
-            unreachable!()
-        };
-        let cli: DqnConfig = cli.into();
-        assert_eq!(cli, yaml_serde::from_str::<DqnConfig>("{}").unwrap());
-
-        let Solver::Reinforce(cli) = solver(&["solve", "reinforce"]) else {
-            unreachable!()
-        };
-        assert_eq!(cli, yaml_serde::from_str::<ReinforceConfig>("{}").unwrap());
-    }
-
-    #[test]
-    fn gamma_is_part_of_solver_configuration() {
-        let Solver::VI(config) = solver(&["solve", "vi", "--gamma", "0.5"]) else {
-            unreachable!()
-        };
-        assert_eq!(config.gamma, 0.5);
-
-        let config: DqnConfig = yaml_serde::from_str("gamma: 0.5").unwrap();
-        assert_eq!(config.gamma, 0.5);
-    }
-
-    #[test]
-    fn solve_seed_defaults_and_parses() {
-        let Commands::Solve(defaults) = Args::try_parse_from(["rlstudy", "solve", "vi"])
-            .unwrap()
-            .command;
-        assert_eq!(defaults.seed, 42);
-
-        let Commands::Solve(configured) =
-            Args::try_parse_from(["rlstudy", "solve", "--seed", "7", "vi"])
-                .unwrap()
-                .command;
-        assert_eq!(configured.seed, 7);
-    }
-
-    #[test]
-    fn system_sources_are_mutually_exclusive() {
-        assert!(
-            Args::try_parse_from([
-                "rlstudy",
-                "solve",
-                "--grid-world",
-                "grid.yaml",
-                "--gym",
-                "CartPole-v1",
-                "vi",
-            ])
-            .is_err()
+            config,
+            yaml_serde::from_str::<ReinforceConfig>("{}").unwrap()
         );
     }
 
     #[test]
-    fn checked_in_dqn_config_parses() {
-        yaml_serde::from_str::<DqnConfig>(include_str!("../../settings/dqn_for_5x5.yaml")).unwrap();
-        yaml_serde::from_str::<DqnConfig>(include_str!("../../settings/dqn_for_cartpole.yaml"))
-            .unwrap();
+    fn reporting_options_parse_at_solve_level() {
+        let Commands::Solve(args) = Args::try_parse_from([
+            "rlstudy",
+            "solve",
+            "--evaluation-frequency",
+            "episode:7",
+            "--evaluation-episodes",
+            "3",
+            "--evaluation-max-steps",
+            "20",
+            "--value-gamma",
+            "0.5",
+            "reinforce",
+        ])
+        .unwrap()
+        .command;
+        assert_eq!(
+            args.reporting.evaluation_frequency,
+            Some(Frequency::PerEpisode(7))
+        );
+        assert_eq!(args.reporting.evaluation_episodes, 3);
+        assert_eq!(args.reporting.evaluation_max_steps, 20);
+        assert_eq!(args.value_gamma, 0.5);
+    }
+
+    #[test]
+    fn unsupported_frequency_is_rejected_before_training() {
+        let (solver, _) = build_solver(&Solver::VI(ValueIterationConfig::default()), None).unwrap();
+        assert!(validate_frequency(&solver, Some(Frequency::PerEpisode(1))).is_err());
     }
 }

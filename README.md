@@ -6,7 +6,7 @@ Solve a YAML grid world:
 cargo run --quiet -- solve --grid-world grid_worlds/zhao_5x5.yaml vi --gamma 0.9
 ```
 
-Solvers are `vi`, `pi`, `tpi`, `mc`, `td`, and `dqn`. Use `--help` for their
+Solvers are `vi`, `pi`, `tpi`, `mc`, `td`, `dqn`, and `reinforce`. Use `--help` for their
 options.
 
 ```bash
@@ -16,10 +16,10 @@ cargo run --quiet -- solve --grid-world grid_worlds/zhao_3x3.yaml td --variant q
 ```
 
 Load the selected solver's settings from YAML with the solve-level `--config`
-option:
+option. Set reporting frequency and evaluation size with solve-level options:
 
 ```bash
-cargo run --release -- solve --grid-world grid_worlds/zhao_5x5.yaml --config settings/dqn_for_5x5.yaml dqn
+cargo run --release -- solve --grid-world grid_worlds/zhao_5x5.yaml --config settings/dqn_for_5x5.yaml --evaluation-frequency episode:50 --evaluation-episodes 10 --evaluation-max-steps 1000 dqn
 ```
 
 Run DQN on Gymnasium through the Python environment managed by `uv`:

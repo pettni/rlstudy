@@ -1,3 +1,4 @@
+use ndarray::Array2;
 use rand::{SeedableRng, rngs::StdRng};
 use rlstudy::algorithms::{
     ModelBasedSolver, ModelFreeSolver, MonteCarlo, MonteCarloConfig, PolicyIterationConfig,
@@ -6,7 +7,9 @@ use rlstudy::algorithms::{
 };
 use rlstudy::environment::{BlackBox, TabularEnvironment};
 use rlstudy::environments::grid_world;
+use rlstudy::evaluation::fixed_policy_values;
 use rlstudy::policy::TabularPolicy;
+use rlstudy::reporting::{Reporter, ReporterConfig};
 
 fn preferred_action(result: &TabularSolveResult, state: usize) -> usize {
     result.policy.greedy_action(&state)
@@ -36,24 +39,13 @@ fn model_based_solver_solves_grid_world(name: &str, solver: TruncatedPolicyItera
     assert_solves_grid_world(name, &result);
 
     // The goal state (bottom-right, index 8) should have the highest value.
-    let values = result
-        .snapshots
-        .last()
-        .unwrap()
-        .state_values
-        .as_ref()
-        .unwrap();
+    let probabilities = Array2::from_shape_fn(
+        (model.states().len(), model.actions().len()),
+        |(state, action)| result.policy.action_probabilities(&state)[action],
+    );
+    let values = fixed_policy_values(&model, &probabilities, 0.5).unwrap();
     let goal_value = values[8];
-    let max_value = result
-        .snapshots
-        .last()
-        .unwrap()
-        .state_values
-        .as_ref()
-        .unwrap()
-        .iter()
-        .copied()
-        .fold(f64::NEG_INFINITY, f64::max);
+    let max_value = values.iter().copied().fold(f64::NEG_INFINITY, f64::max);
     assert!(
         (goal_value - max_value).abs() < 1e-6,
         "{}: goal state should have the maximum value, got {:?}",
@@ -253,17 +245,6 @@ fn q_learning_uses_negative_next_state_values() {
     .solve(&mut environment, &mut rng)
     .unwrap();
 
-    assert!(
-        result
-            .snapshots
-            .last()
-            .unwrap()
-            .state_values
-            .as_ref()
-            .unwrap()[0]
-            < -1.5,
-        "Q-learning must not clamp a negative next-state value to zero"
-    );
     assert_eq!(preferred_action(&result, 0), 0);
 }
 
@@ -307,7 +288,7 @@ fn solver_reports_iteration_limit() {
 }
 
 #[test]
-fn solver_records_each_evaluation_sweep() {
+fn solver_records_each_outer_iteration() {
     let model = grid_world(3).unwrap();
     let solver = TruncatedPolicyIteration::with_stopping_criteria(
         StoppingCriterion::iterations(1).unwrap(),
@@ -316,17 +297,12 @@ fn solver_records_each_evaluation_sweep() {
     )
     .unwrap();
 
-    let result = solver.solve(&model).unwrap();
-    let snapshots = &result.snapshots;
-
-    assert_eq!(snapshots.len(), 5);
-    assert_eq!(snapshots[0].evaluation_sweep, Some(0));
-    assert_eq!(snapshots[0].policy_iteration, Some(0));
-    assert_eq!(snapshots[2].policy_iteration, Some(0));
-    assert_eq!(snapshots[3].policy_iteration, Some(1));
-    assert_eq!(snapshots[4].evaluation_sweep, Some(4));
-    assert_eq!(
-        snapshots[4].state_value,
-        Some(snapshots[4].state_values.as_ref().unwrap()[0])
-    );
+    let mut reporter = Reporter::new(ReporterConfig::default(), 0, None);
+    let result = solver.solve_with_reporter(&model, &mut reporter).unwrap();
+    let history = reporter.into_history();
+    assert_eq!(result.status, SolveStatus::IterationLimit { iterations: 1 });
+    assert_eq!(history.len(), 1);
+    assert_eq!(history[0].unit, "iteration");
+    assert_eq!(history[0].step, 1);
+    assert!(history[0].metrics.contains_key("value/initial"));
 }

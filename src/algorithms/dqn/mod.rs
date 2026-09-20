@@ -3,19 +3,21 @@ mod trainer;
 
 use self::replay_buffer::{ReplayBuffer, Transition};
 use self::trainer::DqnTrainer;
-use crate::algorithms::{
-    ModelFreeSolver, SolveResult, SolveStatus, SolverSnapshot, validate_gamma,
-};
+use crate::algorithms::{ModelFreeSolver, SolveResult, SolveStatus, validate_gamma};
 use crate::environment::{Environment, Space};
-use crate::evaluation::{EvaluationConfig, EvaluationMode};
 pub use crate::network::loss::Loss;
-use crate::policy::{DiscretePolicy, Policy, uniform::UniformPolicy};
+use crate::policy::{
+    DiscretePolicy, Policy,
+    dq::{DeepQPolicy, DeepQPolicyMode},
+    uniform::UniformPolicy,
+};
+use crate::reporting::{AbstractReporter, Step};
 pub use crate::schedule::Schedule;
 use clap::{Args, ValueEnum};
 use ndarray::Array1;
-use rand::{RngExt, SeedableRng, rngs::StdRng};
+use rand::RngExt;
 use serde::{Deserialize, Serialize};
-use std::{io::IsTerminal, str::FromStr};
+use std::str::FromStr;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -69,9 +71,6 @@ pub struct DqnConfig {
     pub loss: Loss,
     pub gradient_clip_value: Option<f32>,
     pub hidden_dims: usize,
-    pub evaluation_interval: usize,
-    pub evaluation_episodes: usize,
-    pub evaluation_max_steps: usize,
 }
 
 impl Default for DqnConfig {
@@ -90,9 +89,6 @@ impl Default for DqnConfig {
             loss: Loss::default(),
             gradient_clip_value: None,
             hidden_dims: 64,
-            evaluation_interval: 100,
-            evaluation_episodes: 10,
-            evaluation_max_steps: 1_000,
         }
     }
 }
@@ -125,12 +121,6 @@ pub struct DqnArgs {
     gradient_clip_value: Option<f32>,
     #[arg(long, default_value_t = DqnConfig::default().hidden_dims)]
     hidden_dims: usize,
-    #[arg(long, default_value_t = DqnConfig::default().evaluation_interval)]
-    evaluation_interval: usize,
-    #[arg(long, default_value_t = DqnConfig::default().evaluation_episodes)]
-    evaluation_episodes: usize,
-    #[arg(long, default_value_t = DqnConfig::default().evaluation_max_steps)]
-    evaluation_max_steps: usize,
 }
 
 impl From<DqnArgs> for DqnConfig {
@@ -151,9 +141,6 @@ impl From<DqnArgs> for DqnConfig {
             loss: args.loss,
             gradient_clip_value: args.gradient_clip_value,
             hidden_dims: args.hidden_dims,
-            evaluation_interval: args.evaluation_interval,
-            evaluation_episodes: args.evaluation_episodes,
-            evaluation_max_steps: args.evaluation_max_steps,
         }
     }
 }
@@ -185,10 +172,11 @@ impl DeepQLearning {
 impl ModelFreeSolver for DeepQLearning {
     type Observation = Array1<f64>;
 
-    fn solve(
+    fn solve_with_reporter(
         &self,
         env: &mut dyn Environment<Observation = Array1<f64>, Action = usize>,
         rng: &mut dyn rand::Rng,
+        reporter: &mut dyn AbstractReporter<Array1<f64>>,
     ) -> Result<SolveResult<Array1<f64>>, String> {
         let Space::Discrete { size: n_a } = env.action_space() else {
             return Err("DQN requires a discrete action space".into());
@@ -231,26 +219,14 @@ impl ModelFreeSolver for DeepQLearning {
             self.config.mode,
             rng.random(),
         );
-        let mut snapshots = Vec::new();
-        let mut window_loss = 0.0;
-        let mut window_updates = 0;
-        let mut evaluation_rng = StdRng::seed_from_u64(rng.random());
-        let evaluation = EvaluationConfig::new(
-            self.config.evaluation_episodes,
-            self.config.evaluation_max_steps,
-            EvaluationMode::DiscountedReward {
-                gamma: self.config.gamma,
-            },
-        )?;
-
         let mut iter = 0;
-        let show_progress = std::io::stderr().is_terminal();
-        if show_progress {
-            print_episode_progress(0, self.config.episodes);
-        }
         for episode in 0..self.config.episodes {
             let mut s = env.reset(rng);
             let learning_rate = self.config.learning_rate.value(episode);
+            let mut episode_return = 0.0;
+            let mut episode_loss = 0.0;
+            let mut episode_gradient_norm = 0.0;
+            let mut episode_length = 0;
 
             for step_index in 0.. {
                 let epsilon = self.config.epsilon_schedule.value(iter);
@@ -258,6 +234,8 @@ impl ModelFreeSolver for DeepQLearning {
                     .policy_view()
                     .epsilon_greedy_action(&s, epsilon, rng);
                 let step = env.step(a, rng);
+                episode_return += step.reward;
+                episode_length = step_index + 1;
 
                 buffer.push(Transition {
                     state: s,
@@ -270,7 +248,7 @@ impl ModelFreeSolver for DeepQLearning {
                 s = step.observation;
 
                 let batch = buffer.sample(self.config.batch_size, rng);
-                let (new_trainer, loss) =
+                let (new_trainer, loss, gradient_norm) =
                     trainer.update(&batch, learning_rate, self.config.gamma, self.config.loss);
                 trainer = new_trainer;
 
@@ -285,8 +263,15 @@ impl ModelFreeSolver for DeepQLearning {
                 }
 
                 iter += 1;
-                window_loss += loss;
-                window_updates += 1;
+                episode_loss += loss;
+                episode_gradient_norm += gradient_norm;
+                let mut make_policy = || {
+                    Box::new(DeepQPolicy::new(
+                        trainer.inference_model(),
+                        DeepQPolicyMode::Greedy,
+                    )) as Box<dyn DiscretePolicy<Observation = Array1<f64>>>
+                };
+                reporter.policy(Step::Iteration(iter), &mut make_policy);
 
                 if step.terminated
                     || step.truncated
@@ -298,41 +283,30 @@ impl ModelFreeSolver for DeepQLearning {
                     break;
                 }
             }
-
-            if (episode + 1) % self.config.evaluation_interval == 0
-                || episode + 1 == self.config.episodes
-            {
-                let policy = trainer.policy_view();
-                snapshots.push(
-                    SolverSnapshot::new(iter)
-                        .episode(episode + 1)
-                        .learning_rate(learning_rate)
-                        .average_loss(window_loss / window_updates as f64)
-                        .evaluate_policy(env, &policy, evaluation, &mut evaluation_rng)?,
-                );
-                window_loss = 0.0;
-                window_updates = 0;
-            }
-            if show_progress {
-                print_episode_progress(episode + 1, self.config.episodes);
-            }
+            let step = Step::Episode(episode + 1);
+            reporter.record(
+                step,
+                &[
+                    ("train/return", episode_return),
+                    ("train/length", episode_length as f64),
+                    ("loss", episode_loss / episode_length as f64),
+                    ("grad/norm", episode_gradient_norm / episode_length as f64),
+                    ("optimizer/lr", learning_rate),
+                ],
+            );
+            let mut make_policy = || {
+                Box::new(DeepQPolicy::new(
+                    trainer.inference_model(),
+                    DeepQPolicyMode::Greedy,
+                )) as Box<dyn DiscretePolicy<Observation = Array1<f64>>>
+            };
+            reporter.policy(step, &mut make_policy);
         }
 
         Ok(SolveResult {
             policy: Box::new(trainer.into_policy()),
-            snapshots,
             status: SolveStatus::IterationLimit { iterations: iter },
         })
-    }
-}
-
-fn print_episode_progress(episode: usize, episodes: usize) {
-    const WIDTH: usize = 30;
-    let filled = WIDTH * episode / episodes;
-    let bar = format!("{}{}", "=".repeat(filled), " ".repeat(WIDTH - filled));
-    eprint!("\rEpisodes [{bar}] {episode}/{episodes}");
-    if episode == episodes {
-        eprintln!();
     }
 }
 

@@ -20,7 +20,7 @@ Develop a solid working understanding of the RL options for improving pretrained
 
 - Read Shiyu Zhao's *Mathematical Foundations of Reinforcement Learning* end-to-end as the main curriculum.
 - Implement a small algorithm or experiment for each conceptual jump in Zhao using `~/coding/rlstudy`. Implement enough to expose the important details; do not reproduce every variant.
-- Use Rust for tabular, linear, and neural implementations. Use Burn for neural networks and custom training loops.
+- Use Rust for tabular and neural implementations. Use Burn for neural networks and custom training loops.
 - Keep Python behind small environment bridges when a simulator has a Python-first API. Rust should own the algorithm, models, replay or rollout data, optimization, evaluation, and logging.
 - Use Sutton and Barto for alternate explanations, exercises, and topics that need more depth.
 - Use Bertsekas's *Reinforcement Learning and Optimal Control* selectively for dynamic programming, approximation, optimal control, and model-based perspectives.
@@ -30,7 +30,7 @@ Develop a solid working understanding of the RL options for improving pretrained
 
 ## Current status
 
-As of 2026-09-12:
+As of 2026-09-19:
 
 - [x] Started reading Zhao end-to-end.
 - [x] Ordered Zhao and Sutton & Barto.
@@ -45,8 +45,10 @@ As of 2026-09-12:
 - [x] Decided to continue neural RL in Rust/Burn based on the prototype.
 - [x] Refocused the final target on comparing RL options for learning from execution data.
 - [x] Added Grid World tests for the implemented algorithms.
+- [x] Personally implemented DQN on CartPole.
+- [x] Understood linear value-function approximation; implementation intentionally skipped because the shared approximation concept is clear and DNN experience directly supports the project goal.
 
-The current personal implementations align with Zhao Chapters 4–7. The agent-built DQN prototype validated the Rust/Burn toolchain but does not count toward the Chapter 8 learning checkpoint.
+The personal DQN implementation completes the Chapter 8 implementation checkpoint. The agent-built DQN prototype served as tooling validation only. Continue with Chapter 9 REINFORCE and its learned baseline, then Chapter 10 one-step actor–critic.
 
 ## Project
 
@@ -90,7 +92,7 @@ Read all ten chapters in order. Pair each major concept with a bounded teaching 
 - [x] **Chapter 6:** incremental sample means and one stochastic-approximation convergence experiment.
 - [x] **Chapter 7:** one-step Sarsa, Expected Sarsa, and Zhao's on-policy Q-learning.
 - [x] **Chapter 7:** derive and understand n-step Sarsa; implementation intentionally skipped.
-- [ ] **Chapter 8:** value-function approximation with simple linear features.
+- [x] **Chapter 8:** understand linear value-function approximation; implementation intentionally skipped in favor of direct DNN implementation.
 - [x] **Chapter 8:** personally implement a minimal Burn DQN on CartPole, using the prototype only as a reference after making an independent attempt.
 - [ ] **Chapter 9:** REINFORCE, then add a learned baseline.
 - [ ] **Chapter 10:** one-step actor–critic.
@@ -239,3 +241,4 @@ Use these in the roles below, not as a parallel reading backlog.
 | 2026-09-12 | Completed Zhao Chapter 7 | Implemented one-step Sarsa, Expected Sarsa, and on-policy Q-learning; understood n-step Sarsa without implementing it | Continue to Chapter 8 and implement linear value-function approximation |
 | 2026-09-12 | Evaluated an agent-built Burn DQN prototype | Burn DQN reached a 297.4 greedy mean return versus a 27.6 random baseline; this validated Rust/Burn but did not count as a learning checkpoint | Continue Chapter 8 with linear value-function approximation, then implement DQN personally |
 | 2026-09-12 | Refocused the curriculum on learning from execution data | PPO and SAC remain foundations; the later phases compare online, off-policy-with-prior-data, offline, and policy-extraction routes | Continue Zhao Chapter 8 |
+| 2026-09-19 | Accepted DQN as the Chapter 8 implementation checkpoint | Linear approximation is understood; a separate implementation would add little toward the project goal | Establish REINFORCE learning behavior, add a learned baseline, then implement one-step actor–critic |

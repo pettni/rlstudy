@@ -1,24 +1,24 @@
-use crate::algorithms::{
-    ModelFreeSolver, SolveResult, SolveStatus, SolverSnapshot, validate_gamma,
-};
+use crate::algorithms::{ModelFreeSolver, SolveResult, SolveStatus};
 use crate::environment::{Environment, Space};
-use crate::evaluation::{EvaluationConfig, EvaluationMode};
 use crate::network::mlp::MlpModel;
 use crate::policy::{
     Policy,
     dq::{DeepQPolicy, DeepQPolicyMode},
 };
+use crate::reporting::{AbstractReporter, Step};
 use crate::schedule::Schedule;
 use burn::{
     Tensor,
     backend::{Autodiff, Flex, flex::FlexDevice},
     module::AutodiffModule,
-    optim::{GradientsParams, Optimizer, Sgd, SgdConfig, adaptor::OptimizerAdaptor},
+    optim::{Adam, AdamConfig, GradientsParams, Optimizer, adaptor::OptimizerAdaptor},
     tensor::{Int, TensorData, activation::log_softmax, backend::Backend},
 };
 use clap::Args;
 use ndarray::Array1;
-use rand::{RngExt, SeedableRng, rngs::StdRng};
+use rand::RngExt;
+#[cfg(test)]
+use rand::{SeedableRng, rngs::StdRng};
 use serde::{Deserialize, Serialize};
 
 type TrainingBackend = Autodiff<Flex>;
@@ -28,33 +28,28 @@ type TrainingBackend = Autodiff<Flex>;
 pub struct ReinforceConfig {
     #[arg(long, default_value_t = ReinforceConfig::default().gamma)]
     pub gamma: f64,
-    #[arg(long, default_value_t = ReinforceConfig::default().learning_rate)]
-    pub learning_rate: f64,
-    #[arg(long, default_value_t = ReinforceConfig::default().final_learning_rate)]
-    pub final_learning_rate: f64,
+    #[arg(long, default_value = "linear:0.001:0.0001:999")]
+    pub learning_rate: Schedule,
+    #[arg(long, default_value_t = ReinforceConfig::default().hidden_dims)]
+    pub hidden_dims: usize,
     #[arg(long, default_value_t = ReinforceConfig::default().episodes)]
     pub episodes: usize,
     #[arg(long, default_value_t = ReinforceConfig::default().episode_length)]
     pub episode_length: usize,
-    #[arg(long, default_value_t = ReinforceConfig::default().evaluation_interval)]
-    pub evaluation_interval: usize,
-    #[arg(long, default_value_t = ReinforceConfig::default().evaluation_episodes)]
-    pub evaluation_episodes: usize,
-    #[arg(long, default_value_t = ReinforceConfig::default().evaluation_max_steps)]
-    pub evaluation_max_steps: usize,
 }
 
 impl Default for ReinforceConfig {
     fn default() -> Self {
         Self {
             gamma: 0.9,
-            learning_rate: 0.001,
-            final_learning_rate: 0.0001,
+            learning_rate: Schedule::Linear {
+                initial: 0.001,
+                final_value: 0.0001,
+                steps: 999,
+            },
+            hidden_dims: 64,
             episodes: 1_000,
             episode_length: 100,
-            evaluation_interval: 100,
-            evaluation_episodes: 10,
-            evaluation_max_steps: 1_000,
         }
     }
 }
@@ -65,29 +60,38 @@ pub struct Reinforce {
 
 impl Reinforce {
     pub fn new(config: ReinforceConfig) -> Result<Self, String> {
-        validate_gamma(config.gamma)?;
-        if !config.learning_rate.is_finite()
-            || config.learning_rate <= 0.0
-            || config.learning_rate > 1.0
-        {
-            return Err("learning rate must be finite, positive, and at most one".into());
+        if !config.gamma.is_finite() || !(0.0..=1.0).contains(&config.gamma) {
+            return Err("gamma must be finite and in [0, 1]".into());
         }
-        if !config.final_learning_rate.is_finite()
-            || config.final_learning_rate < 0.0
-            || config.final_learning_rate > config.learning_rate
-        {
+        let valid_rate = |rate: f64| rate.is_finite() && rate > 0.0 && rate <= 1.0;
+        let valid_schedule = match &config.learning_rate {
+            Schedule::Constant { value } => valid_rate(*value),
+            Schedule::Linear {
+                initial,
+                final_value,
+                steps,
+            } => valid_rate(*initial) && valid_rate(*final_value) && *steps > 0,
+            Schedule::Exponential {
+                initial,
+                final_value,
+                decay,
+            } => valid_rate(*initial) && valid_rate(*final_value) && *decay > 0,
+            Schedule::Stepwise { initial, changes } => {
+                valid_rate(*initial)
+                    && changes.iter().all(|(_, rate)| valid_rate(*rate))
+                    && changes.windows(2).all(|pair| pair[0].0 < pair[1].0)
+            }
+        };
+        if !valid_schedule {
             return Err(
-                "final learning rate must be finite and between zero and the initial learning rate"
-                    .into(),
+                "learning rates must be finite and in (0, 1], with increasing steps".into(),
             );
         }
-        if config.episodes == 0 || config.episode_length == 0 || config.evaluation_interval == 0 {
-            return Err(
-                "episodes, episode length, and evaluation interval must be positive".into(),
-            );
+        if config.hidden_dims == 0 {
+            return Err("hidden dims must be positive".into());
         }
-        if config.evaluation_episodes == 0 || config.evaluation_max_steps == 0 {
-            return Err("evaluation episodes and max steps must be positive".into());
+        if config.episodes == 0 || config.episode_length == 0 {
+            return Err("episodes and episode length must be positive".into());
         }
         Ok(Self { config })
     }
@@ -96,10 +100,11 @@ impl Reinforce {
 impl ModelFreeSolver for Reinforce {
     type Observation = Array1<f64>;
 
-    fn solve(
+    fn solve_with_reporter(
         &self,
         env: &mut dyn Environment<Observation = Array1<f64>, Action = usize>,
         rng: &mut dyn rand::Rng,
+        reporter: &mut dyn AbstractReporter<Array1<f64>>,
     ) -> Result<SolveResult<Array1<f64>>, String> {
         let Space::Continuous { dim: n_s } = env.state_space() else {
             return Err("Reinforce requires a continuous state space".into());
@@ -111,33 +116,10 @@ impl ModelFreeSolver for Reinforce {
         let device = FlexDevice;
         <TrainingBackend as Backend>::seed(&device, rng.random());
 
-        let mut optimizer: OptimizerAdaptor<Sgd<Flex>, MlpModel<TrainingBackend>, TrainingBackend> =
-            SgdConfig::new().init();
+        let mut optimizer: OptimizerAdaptor<Adam, MlpModel<TrainingBackend>, TrainingBackend> =
+            AdamConfig::new().init();
 
-        let learning_rate_schedule = if self.config.learning_rate == self.config.final_learning_rate
-        {
-            Schedule::Constant {
-                value: self.config.learning_rate,
-            }
-        } else {
-            Schedule::Linear {
-                initial: self.config.learning_rate,
-                final_value: self.config.final_learning_rate,
-                steps: self.config.episodes.saturating_sub(1).max(1),
-            }
-        };
-
-        let mut policy_network = MlpModel::new(n_s, 64, n_a, &device);
-        let mut snapshots = Vec::new();
-        let mut evaluation_rng = StdRng::seed_from_u64(rng.random());
-        let evaluation = EvaluationConfig::new(
-            self.config.evaluation_episodes,
-            self.config.evaluation_max_steps,
-            EvaluationMode::DiscountedReward {
-                gamma: self.config.gamma,
-            },
-        )?;
-
+        let mut policy_network = MlpModel::new(n_s, self.config.hidden_dims, n_a, &device);
         for episode_index in 0..self.config.episodes {
             let policy = DeepQPolicy::borrowed(&policy_network, DeepQPolicyMode::SoftMax);
             let s0 = env.reset(rng);
@@ -154,6 +136,7 @@ impl ModelFreeSolver for Reinforce {
                 .collect::<Vec<_>>();
 
             let episode_length = episode.len();
+            let episode_return = episode.iter().map(|(_, _, reward)| reward).sum::<f64>();
             let mut states = Vec::with_capacity(episode_length * n_s);
             let mut actions = Vec::with_capacity(episode_length);
 
@@ -180,24 +163,41 @@ impl ModelFreeSolver for Reinforce {
                 TensorData::new(returns, [episode_length]),
                 &device,
             );
-            let ln_pi_sa = log_softmax(policy_network.forward(st), 1)
-                .gather(1, at)
-                .squeeze_dim(1);
-            let loss = (ln_pi_sa * gamma_t_qt_sa).mean().neg();
+            let log_probs = log_softmax(policy_network.forward(st), 1);
+            let entropy = (log_probs.clone().exp() * log_probs.clone())
+                .sum()
+                .neg()
+                .into_data()
+                .iter::<f64>()
+                .next()
+                .expect("entropy tensor has one element")
+                / episode_length as f64;
+            let ln_pi_sa = log_probs.gather(1, at).squeeze_dim(1);
+            let loss = (ln_pi_sa * gamma_t_qt_sa).sum().neg();
             let gradients = GradientsParams::from_grads(loss.backward(), &policy_network);
-            let learning_rate = learning_rate_schedule.value(episode_index);
+            let gradient_norm = policy_network.gradient_norm(&gradients);
+            let learning_rate = self.config.learning_rate.value(episode_index);
             policy_network = optimizer.step(learning_rate, policy_network, gradients);
-
-            if (episode_index + 1) % self.config.evaluation_interval == 0
-                || episode_index + 1 == self.config.episodes
-            {
-                let policy = DeepQPolicy::borrowed(&policy_network, DeepQPolicyMode::SoftMax);
-                snapshots.push(
-                    SolverSnapshot::new(episode_index + 1)
-                        .learning_rate(learning_rate)
-                        .evaluate_policy(env, &policy, evaluation, &mut evaluation_rng)?,
-                );
-            }
+            let step = Step::Episode(episode_index + 1);
+            reporter.record(
+                step,
+                &[
+                    ("train/return", episode_return),
+                    ("train/length", episode_length as f64),
+                    ("policy/entropy", entropy),
+                    ("grad/norm", gradient_norm),
+                    ("optimizer/lr", learning_rate),
+                ],
+            );
+            let mut make_policy = || {
+                Box::new(DeepQPolicy::new(
+                    policy_network.valid(),
+                    DeepQPolicyMode::SoftMax,
+                ))
+                    as Box<dyn crate::policy::DiscretePolicy<Observation = Array1<f64>>>
+            };
+            reporter.policy(step, &mut make_policy);
+            reporter.policy(Step::Iteration(episode_index + 1), &mut make_policy);
         }
 
         Ok(SolveResult {
@@ -205,7 +205,6 @@ impl ModelFreeSolver for Reinforce {
                 policy_network.valid(),
                 DeepQPolicyMode::SoftMax,
             )),
-            snapshots,
             status: SolveStatus::IterationLimit {
                 iterations: self.config.episodes,
             },
@@ -238,6 +237,7 @@ mod tests {
     use super::*;
     use crate::environment::FeatureEnvironment;
     use crate::environments::grid_world;
+    use crate::reporting::{Frequency, Reporter, ReporterConfig};
 
     #[test]
     fn policy_gradient_returns_include_absolute_discount() {
@@ -257,12 +257,19 @@ mod tests {
         );
         assert!(
             Reinforce::new(ReinforceConfig {
-                learning_rate: 0.0,
+                learning_rate: Schedule::Constant { value: 0.0 },
                 ..ReinforceConfig::default()
             })
             .is_err()
         );
         assert!(Reinforce::new(ReinforceConfig::default()).is_ok());
+        assert!(
+            Reinforce::new(ReinforceConfig {
+                gamma: 1.0,
+                ..ReinforceConfig::default()
+            })
+            .is_ok()
+        );
     }
 
     #[test]
@@ -273,21 +280,33 @@ mod tests {
         let solver = Reinforce::new(ReinforceConfig {
             episodes: 2,
             episode_length: 2,
-            evaluation_interval: 1,
-            evaluation_episodes: 1,
-            evaluation_max_steps: 2,
             ..ReinforceConfig::default()
         })
         .unwrap();
 
-        let result = solver.solve(&mut environment, &mut rng).unwrap();
+        let mut evaluation_environment = FeatureEnvironment::new(&model).unwrap();
+        let mut reporter = Reporter::new(
+            ReporterConfig {
+                evaluation_frequency: Some(Frequency::PerEpisode(1)),
+                evaluation_episodes: 1,
+                evaluation_max_steps: 2,
+            },
+            0,
+            Some(&mut evaluation_environment),
+        );
+        let result = solver
+            .solve_with_reporter(&mut environment, &mut rng, &mut reporter)
+            .unwrap();
         let probabilities = result
             .policy
             .action_probabilities(&Array1::from_vec(vec![0.0, 0.0]));
+        let history = reporter.into_history();
 
-        assert_eq!(result.snapshots.len(), 2);
-        assert!(result.snapshots.iter().all(|snapshot| {
-            snapshot.evaluation_return.is_some() && snapshot.learning_rate.is_some()
+        assert_eq!(history.len(), 2);
+        assert!(history.iter().all(|row| {
+            row.metrics.contains_key("eval/return_mean")
+                && row.metrics.contains_key("optimizer/lr")
+                && row.metrics.contains_key("policy/entropy")
         }));
         assert!((probabilities.sum() - 1.0).abs() < 1e-6);
     }

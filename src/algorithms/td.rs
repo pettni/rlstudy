@@ -1,8 +1,7 @@
-use crate::algorithms::{
-    ModelFreeSolver, SolveResult, SolveStatus, SolverSnapshot, validate_gamma,
-};
+use crate::algorithms::{ModelFreeSolver, SolveResult, SolveStatus, validate_gamma};
 use crate::environment::{Environment, Space, Step};
 use crate::policy::{Policy, PolicyObjective, TabularPolicy};
+use crate::reporting::{AbstractReporter, Step as ReportStep};
 use clap::{Args, ValueEnum};
 use ndarray::{Array2, ArrayView1};
 use serde::{Deserialize, Serialize};
@@ -96,11 +95,12 @@ impl TD {
 impl ModelFreeSolver for TD {
     type Observation = usize;
 
-    fn solve(
+    fn solve_with_reporter(
         &self,
         env: &mut dyn Environment<Observation = usize, Action = usize>,
         rng: &mut dyn rand::Rng,
-    ) -> Result<crate::algorithms::TabularSolveResult, String> {
+        reporter: &mut dyn AbstractReporter<usize>,
+    ) -> Result<SolveResult<usize>, String> {
         let Space::Discrete { size: n_s } = env.state_space() else {
             return Err("TD requires a discrete state space".into());
         };
@@ -132,13 +132,17 @@ impl ModelFreeSolver for TD {
                 .unwrap_or(&pi_target)
                 .sample_action(&st, rng);
 
+            let mut episode_length = 0;
+            let mut episode_return = 0.0;
             for _ in 0..self.config.episode_length {
+                episode_length += 1;
                 let Step {
                     observation: stp,
                     reward: rt,
                     terminated,
                     truncated,
                 } = env.step(at, rng);
+                episode_return += rt;
 
                 // value update
                 let (q_next, atp) = if terminated {
@@ -184,24 +188,30 @@ impl ModelFreeSolver for TD {
                         .sample_action(&st, rng),
                 };
             }
+            let episode_number =
+                usize::try_from(_e + 1).map_err(|_| "episode count does not fit usize")?;
+            reporter.record(
+                ReportStep::Episode(episode_number),
+                &[
+                    ("train/return", episode_return),
+                    ("train/length", episode_length as f64),
+                ],
+            );
+            reporter.policy(ReportStep::Episode(episode_number), &mut || {
+                let policy = match self.config.variant {
+                    TDVariant::QLearning => {
+                        TabularPolicy::from_q(&q_sa, PolicyObjective::Deterministic)
+                            .expect("valid action values")
+                    }
+                    TDVariant::Sarsa | TDVariant::ExpectedSarsa => pi_target.clone(),
+                };
+                Box::new(policy)
+            });
         }
 
-        let (policy, value) = match self.config.variant {
-            TDVariant::QLearning => {
-                let value = (0..n_s).map(|s| max_q(q_sa.row(s))).collect();
-                let policy = TabularPolicy::from_q(&q_sa, PolicyObjective::Deterministic)?;
-                (policy, value)
-            }
-            TDVariant::Sarsa | TDVariant::ExpectedSarsa => {
-                let value = (0..n_s)
-                    .map(|s| {
-                        (0..n_a)
-                            .map(|a| pi_target.probability(s, a) * q_sa[[s, a]])
-                            .sum()
-                    })
-                    .collect();
-                (pi_target, value)
-            }
+        let policy = match self.config.variant {
+            TDVariant::QLearning => TabularPolicy::from_q(&q_sa, PolicyObjective::Deterministic)?,
+            TDVariant::Sarsa | TDVariant::ExpectedSarsa => pi_target,
         };
         let iterations = self
             .config
@@ -211,7 +221,6 @@ impl ModelFreeSolver for TD {
 
         Ok(SolveResult {
             policy: Box::new(policy),
-            snapshots: vec![SolverSnapshot::new(iterations).state_values(value)],
             status: SolveStatus::IterationLimit { iterations },
         })
     }
