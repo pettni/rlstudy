@@ -5,17 +5,15 @@ learning_rate:
   initial: 0.05
   final_value: 0.001
   steps: 5000
-batch_size: 1024
+batch_size: 512
 replay_capacity: 10000
-warm_up_transitions: 10000
-episodes: 5000
-episode_length: 1000
+warm_up_transitions: 1024
+episodes: 250
+episode_length: 30
 epsilon_schedule:
   type: constant
   value: 0.9
 target_update:
   type: soft
   rate: 0.005
-loss: huber
-gradient_clip_value: 100.0
 hidden_dims: 100

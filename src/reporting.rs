@@ -79,7 +79,7 @@ pub struct ReporterConfig {
     pub evaluation_frequency: Option<Frequency>,
     #[arg(long, default_value_t = 10)]
     pub evaluation_episodes: usize,
-    #[arg(long, default_value_t = 1_000)]
+    #[arg(long, default_value_t = 100)]
     pub evaluation_max_steps: usize,
 }
 
