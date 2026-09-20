@@ -1,7 +1,9 @@
 use burn::Tensor;
 use burn::backend::{Flex, flex::FlexDevice};
 use burn::tensor::TensorData;
+use burn::tensor::backend::Backend;
 use ndarray::Array1;
+use std::{borrow::Borrow, marker::PhantomData};
 
 use super::DiscretePolicy;
 use crate::network::mlp::MlpModel;
@@ -14,28 +16,54 @@ pub enum DeepQPolicyMode {
 }
 
 #[derive(Debug, Clone)]
-pub struct DeepQPolicy {
-    q_network: MlpModel<Flex>, // f(s) s.t. q(s, a) = f(s)[a]
+pub struct DeepQPolicy<B = Flex, N = MlpModel<B>>
+where
+    B: Backend<Device = FlexDevice>,
+{
+    q_network: N, // f(s) s.t. q(s, a) = f(s)[a]
     mode: DeepQPolicyMode,
+    backend: PhantomData<B>,
 }
 
 impl DeepQPolicy {
     pub fn new(q_network: MlpModel<Flex>, mode: DeepQPolicyMode) -> Self {
-        Self { q_network, mode }
+        Self {
+            q_network,
+            mode,
+            backend: PhantomData,
+        }
     }
 }
 
-impl DiscretePolicy for DeepQPolicy {
+impl<'a, B> DeepQPolicy<B, &'a MlpModel<B>>
+where
+    B: Backend<Device = FlexDevice>,
+{
+    pub fn borrowed(q_network: &'a MlpModel<B>, mode: DeepQPolicyMode) -> Self {
+        Self {
+            q_network,
+            mode,
+            backend: PhantomData,
+        }
+    }
+}
+
+impl<B, N> DiscretePolicy for DeepQPolicy<B, N>
+where
+    B: Backend<Device = FlexDevice>,
+    N: Borrow<MlpModel<B>>,
+{
     type Observation = Array1<f64>;
 
     fn action_probabilities(&self, observation: &Array1<f64>) -> Array1<f64> {
         let device = FlexDevice;
-        let observation = Tensor::<Flex, 2>::from_data(
+        let observation = Tensor::<B, 2>::from_data(
             TensorData::new(observation.to_vec(), [1, observation.len()]),
             &device,
         );
         let q_a: Array1<f64> = Array1::from_iter(
             self.q_network
+                .borrow()
                 .forward(observation)
                 .squeeze_dim::<1>(0)
                 .into_data()

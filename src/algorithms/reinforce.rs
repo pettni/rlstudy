@@ -139,8 +139,7 @@ impl ModelFreeSolver for Reinforce {
         )?;
 
         for episode_index in 0..self.config.episodes {
-            // TODO: avoid copy?
-            let policy = DeepQPolicy::new(policy_network.clone().valid(), DeepQPolicyMode::SoftMax);
+            let policy = DeepQPolicy::borrowed(&policy_network, DeepQPolicyMode::SoftMax);
             let s0 = env.reset(rng);
             let episode = (0..self.config.episode_length)
                 .scan(Some(s0), |state, _| {
@@ -192,8 +191,7 @@ impl ModelFreeSolver for Reinforce {
             if (episode_index + 1) % self.config.evaluation_interval == 0
                 || episode_index + 1 == self.config.episodes
             {
-                let policy =
-                    DeepQPolicy::new(policy_network.clone().valid(), DeepQPolicyMode::SoftMax);
+                let policy = DeepQPolicy::borrowed(&policy_network, DeepQPolicyMode::SoftMax);
                 snapshots.push(
                     SolverSnapshot::new(episode_index + 1)
                         .learning_rate(learning_rate)

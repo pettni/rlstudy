@@ -210,7 +210,7 @@ impl ModelFreeSolver for DeepQLearning {
             let done = step.terminated || step.truncated;
 
             buffer.push(Transition {
-                state: s.clone(),
+                state: s,
                 action: a,
                 reward: step.reward,
                 next_state: step.observation.clone(),
@@ -231,8 +231,6 @@ impl ModelFreeSolver for DeepQLearning {
             self.config.mode,
             rng.random(),
         );
-        let mut pi = trainer.policy();
-
         let mut snapshots = Vec::new();
         let mut window_loss = 0.0;
         let mut window_updates = 0;
@@ -256,7 +254,9 @@ impl ModelFreeSolver for DeepQLearning {
 
             for step_index in 0.. {
                 let epsilon = self.config.epsilon_schedule.value(iter);
-                let a = pi.epsilon_greedy_action(&s, epsilon, rng);
+                let a = trainer
+                    .policy_view()
+                    .epsilon_greedy_action(&s, epsilon, rng);
                 let step = env.step(a, rng);
 
                 buffer.push(Transition {
@@ -273,7 +273,6 @@ impl ModelFreeSolver for DeepQLearning {
                 let (new_trainer, loss) =
                     trainer.update(&batch, learning_rate, self.config.gamma, self.config.loss);
                 trainer = new_trainer;
-                pi = trainer.policy();
 
                 match self.config.target_update {
                     TargetUpdateConfig::Hard { steps } if (iter + 1) % steps == 0 => {
@@ -303,12 +302,13 @@ impl ModelFreeSolver for DeepQLearning {
             if (episode + 1) % self.config.evaluation_interval == 0
                 || episode + 1 == self.config.episodes
             {
+                let policy = trainer.policy_view();
                 snapshots.push(
                     SolverSnapshot::new(iter)
                         .episode(episode + 1)
                         .learning_rate(learning_rate)
                         .average_loss(window_loss / window_updates as f64)
-                        .evaluate_policy(env, &pi, evaluation, &mut evaluation_rng)?,
+                        .evaluate_policy(env, &policy, evaluation, &mut evaluation_rng)?,
                 );
                 window_loss = 0.0;
                 window_updates = 0;
