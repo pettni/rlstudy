@@ -6,7 +6,7 @@ learning_rate:
 batch_size: 64
 replay_capacity: 10000
 warm_up_transitions: 256
-episodes: 200
+episodes: 300
 epsilon_schedule:
   type: exponential
   initial: 1.0

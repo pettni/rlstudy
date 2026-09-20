@@ -5,6 +5,6 @@ learning_rate:
   changes:
     - [500, 0.0005]
 hidden_dims: 16
-episodes: 600
+episodes: 500
 episode_length: 500
 gradient_clip_value: 100
