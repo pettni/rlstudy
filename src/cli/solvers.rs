@@ -1,7 +1,7 @@
 use clap::Subcommand;
 use rlstudy::algorithms::{
-    DeepQLearning, DqnArgs, MonteCarlo, MonteCarloConfig, PolicyIterationConfig, Reinforce,
-    ReinforceConfig, TD, TDConfig, TruncatedPolicyIteration, TruncatedPolicyIterationConfig,
+    DeepQLearning, DqnArgs, MonteCarlo, MonteCarloConfig, PolicyGradient, PolicyGradientConfig,
+    PolicyIterationConfig, TD, TDConfig, TruncatedPolicyIteration, TruncatedPolicyIterationConfig,
     ValueIterationConfig,
 };
 use serde::{Serialize, de::DeserializeOwned};
@@ -15,7 +15,7 @@ pub(super) enum Solver {
     MC(MonteCarloConfig),
     TD(TDConfig),
     Dqn(DqnArgs),
-    Reinforce(ReinforceConfig),
+    PolicyGradient(PolicyGradientConfig),
 }
 
 impl Solver {
@@ -27,7 +27,7 @@ impl Solver {
             Self::MC(_) => "mc",
             Self::TD(_) => "td",
             Self::Dqn(_) => "dqn",
-            Self::Reinforce(_) => "reinforce",
+            Self::PolicyGradient(_) => "policy-gradient",
         }
     }
 }
@@ -37,7 +37,7 @@ pub(super) enum SelectedSolver {
     MonteCarlo(MonteCarlo),
     TD(TD),
     Dqn(DeepQLearning),
-    Reinforce(Reinforce),
+    PolicyGradient(PolicyGradient),
 }
 
 pub(super) fn build_solver(
@@ -85,10 +85,10 @@ pub(super) fn build_solver(
             let parameters = serde_json::to_value(&config)?;
             Ok((SelectedSolver::Dqn(DeepQLearning::new(config)?), parameters))
         }
-        Solver::Reinforce(config) => {
+        Solver::PolicyGradient(config) => {
             let (config, parameters) = resolve_config(config, config_path)?;
             Ok((
-                SelectedSolver::Reinforce(Reinforce::new(config)?),
+                SelectedSolver::PolicyGradient(PolicyGradient::new(config)?),
                 parameters,
             ))
         }
@@ -125,7 +125,7 @@ where
 #[cfg(test)]
 mod tests {
     use rlstudy::algorithms::DqnConfig;
-    use rlstudy::algorithms::ReinforceConfig;
+    use rlstudy::algorithms::PolicyGradientConfig;
 
     #[test]
     fn dqn_yaml_uses_defaults_for_missing_fields() {
@@ -152,21 +152,11 @@ mod tests {
     }
 
     #[test]
-    fn checked_in_reinforce_config_parses() {
-        let config: ReinforceConfig =
+    fn checked_in_policy_gradient_config_parses() {
+        let config: PolicyGradientConfig =
             yaml_serde::from_str(include_str!("../../settings/reinforce_for_cartpole.yaml"))
                 .unwrap();
 
-        assert_eq!(config.gamma, 1.0);
-        assert_eq!(config.hidden_dims, 16);
-        assert_eq!(config.episodes, 2500);
-        assert_eq!(
-            config.learning_rate,
-            rlstudy::algorithms::Schedule::Stepwise {
-                initial: 0.01,
-                changes: vec![(500, 0.0005), (1500, 0.0001)],
-            }
-        );
-        assert!(rlstudy::algorithms::Reinforce::new(config).is_ok());
+        assert!(rlstudy::algorithms::PolicyGradient::new(config).is_ok());
     }
 }

@@ -5,17 +5,17 @@ use crate::reporting::{AbstractReporter, Reporter, ReporterConfig};
 
 pub mod dqn;
 pub mod monte_carlo;
+pub mod policy_gradient;
 pub mod policy_iteration;
-pub mod reinforce;
 pub mod td;
 
 pub use dqn::{DeepQLearning, DqnArgs, DqnConfig, DqnMode, Loss, Schedule, TargetUpdateConfig};
 pub use monte_carlo::{MonteCarlo, MonteCarloConfig};
+pub use policy_gradient::{PolicyGradient, PolicyGradientConfig};
 pub use policy_iteration::{
     PolicyIterationConfig, StoppingCriterion, TruncatedPolicyIteration,
     TruncatedPolicyIterationConfig, ValueIterationConfig,
 };
-pub use reinforce::{Reinforce, ReinforceConfig};
 pub use td::{TD, TDConfig, TDVariant};
 
 pub trait ModelBasedSolver {

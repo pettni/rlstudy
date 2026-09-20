@@ -6,7 +6,7 @@ Solve a YAML grid world:
 cargo run -r -- solve --grid-world grid_worlds/zhao_5x5.yaml vi --gamma 0.9
 ```
 
-Solvers are `vi`, `pi`, `tpi`, `mc`, `td`, `dqn`, and `reinforce`. Use `--help` for their
+Solvers are `vi`, `pi`, `tpi`, `mc`, `td`, `dqn`, and `policy-gradient`. Use `--help` for their
 options.
 
 ```bash
@@ -49,5 +49,5 @@ uv run cargo run -r -- solve --evaluation-frequency episode:10 --evaluation-max-
 
 REINFORCE on CartPole:
 ```bash
-uv run cargo run -r -- solve --evaluation-frequency episode:10 --evaluation-max-steps 500 --json --gym CartPole-v1 --config settings/reinforce_for_cartpole.yaml reinforce | uv run scripts/plot_solver.py | icat
+uv run cargo run -r -- solve --evaluation-frequency episode:10 --evaluation-max-steps 500 --json --gym CartPole-v1 --config settings/reinforce_for_cartpole.yaml policy-gradient | uv run scripts/plot_solver.py | icat
 ```

@@ -217,7 +217,7 @@ fn run_solver(
             };
             Ok((SelectedResult::Neural(result, history), stats))
         }
-        SelectedSolver::Reinforce(solver) => {
+        SelectedSolver::PolicyGradient(solver) => {
             let (result, history, stats) = match system {
                 SelectedSystem::Model(model) => {
                     let mut environment = FeatureEnvironment::new(model)?;
@@ -356,7 +356,7 @@ struct VisualizationResult<'a> {
 mod tests {
     use super::*;
     use rlstudy::algorithms::{
-        DqnConfig, MonteCarloConfig, ReinforceConfig, TDConfig, ValueIterationConfig,
+        DqnConfig, MonteCarloConfig, PolicyGradientConfig, TDConfig, ValueIterationConfig,
     };
 
     fn solver(arguments: &[&str]) -> Solver {
@@ -392,12 +392,12 @@ mod tests {
         };
         let config: DqnConfig = config.into();
         assert_eq!(config, yaml_serde::from_str::<DqnConfig>("{}").unwrap());
-        let Solver::Reinforce(config) = solver(&["solve", "reinforce"]) else {
+        let Solver::PolicyGradient(config) = solver(&["solve", "policy-gradient"]) else {
             unreachable!()
         };
         assert_eq!(
             config,
-            yaml_serde::from_str::<ReinforceConfig>("{}").unwrap()
+            yaml_serde::from_str::<PolicyGradientConfig>("{}").unwrap()
         );
     }
 
@@ -414,7 +414,7 @@ mod tests {
             "20",
             "--value-gamma",
             "0.5",
-            "reinforce",
+            "policy-gradient",
         ])
         .unwrap()
         .command;
