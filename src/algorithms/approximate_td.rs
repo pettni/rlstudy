@@ -7,7 +7,7 @@ use crate::policy::{
     Policy,
     dq::{DeepQPolicy, DeepQPolicyMode},
 };
-use crate::reporting::AbstractReporter;
+use crate::reporting::{AbstractReporter, Step};
 use crate::schedule::Schedule;
 use burn::{
     Tensor,
@@ -32,9 +32,12 @@ pub struct ApproximateTDConfig {
     pub gamma: f64,
     #[arg(long, default_value_t = ApproximateTDConfig::default().epsilon)]
     pub epsilon: f64,
+    /// Scale rewards in TD targets; reported returns keep their original units.
+    #[arg(long, default_value_t = ApproximateTDConfig::default().reward_scale)]
+    pub reward_scale: f64,
     #[arg(long, default_value = "linear:0.001:0.0001:999")]
     pub learning_rate: Schedule,
-    #[arg(long, default_value = "linear:0.001:0.0001:999")]
+    #[arg(long, default_value_t = ApproximateTDConfig::default().hidden_dims)]
     pub hidden_dims: usize,
     #[arg(long, default_value_t = ApproximateTDConfig::default().episodes)]
     pub episodes: usize,
@@ -48,6 +51,7 @@ impl Default for ApproximateTDConfig {
             n: 1,
             gamma: 0.9,
             epsilon: 0.1,
+            reward_scale: 1.0,
             learning_rate: Schedule::Linear {
                 initial: 0.001,
                 final_value: 0.0001,
@@ -66,11 +70,20 @@ pub struct ApproximateTD {
 
 impl ApproximateTD {
     pub fn new(config: ApproximateTDConfig) -> Result<Self, String> {
+        if config.n == 0 {
+            return Err("n must be positive".into());
+        }
         if !config.gamma.is_finite() || !(0.0..=1.0).contains(&config.gamma) {
             return Err("gamma must be finite and in [0, 1]".into());
         }
+        if !config.epsilon.is_finite() || !(0.0..=1.0).contains(&config.epsilon) {
+            return Err("epsilon must be finite and in [0, 1]".into());
+        }
         if config.hidden_dims == 0 {
             return Err("hidden dims must be positive".into());
+        }
+        if !config.reward_scale.is_finite() || config.reward_scale <= 0.0 {
+            return Err("reward scale must be finite and positive".into());
         }
         if config.episodes == 0 || config.episode_length == 0 {
             return Err("episodes and episode length must be positive".into());
@@ -89,10 +102,10 @@ impl ModelFreeSolver for ApproximateTD {
         reporter: &mut dyn AbstractReporter<Array1<f64>>,
     ) -> Result<SolveResult<Array1<f64>>, String> {
         let Space::Continuous { dim: n_s } = env.state_space() else {
-            return Err("Actor-critic requires a continuous state space".into());
+            return Err("Approximate TD requires a continuous state space".into());
         };
         let Space::Discrete { size: n_a } = env.action_space() else {
-            return Err("Actor-critic requires a discrete action space".into());
+            return Err("Approximate TD requires a discrete action space".into());
         };
 
         let device = FlexDevice;
@@ -106,103 +119,131 @@ impl ModelFreeSolver for ApproximateTD {
 
         for episode_index in 0..self.config.episodes {
             let mut state = env.reset(rng);
+            let mut action = DeepQPolicy::borrowed(
+                &q,
+                DeepQPolicyMode::SoftGreedy {
+                    epsilon: self.config.epsilon,
+                },
+            )
+            .sample_action(&state, rng);
             let mut episode_return = 0.0;
             let mut episode_length = 0;
-            let mut entropy_sum = 0.0;
-            let mut actor_gradient_norm_sum = 0.0;
-            let mut critic_gradient_norm_sum = 0.0;
+            let mut episode_loss = 0.0;
+            let mut episode_gradient_norm = 0.0;
 
             let learning_rate = self.config.learning_rate.value(episode_index);
 
             let mut terminated = false;
 
-            // [st-n, ..., st]
-            let mut st = VecDeque::with_capacity(self.config.n);
-            // [at-n, ..., at]
-            let mut at = VecDeque::with_capacity(self.config.n);
-            // [rt-n+1, ..., rt+1]
-            let mut rtp = VecDeque::with_capacity(self.config.n);
+            let mut pending = VecDeque::with_capacity(self.config.n);
+            let mut bootstrap = None;
 
-            st.push_back(state.clone());
-            at.push_back(
-                DeepQPolicy::borrowed(
-                    &q,
-                    DeepQPolicyMode::SoftGreedy {
-                        epsilon: self.config.epsilon,
-                    },
-                )
-                .sample_action(&state, rng),
-            );
-
-            for t in 0..self.config.episode_length {
-                let policy = DeepQPolicy::borrowed(
-                    &q,
-                    DeepQPolicyMode::SoftGreedy {
-                        epsilon: self.config.epsilon,
-                    },
-                );
-
+            for _ in 0..self.config.episode_length + self.config.n {
                 if !terminated {
-                    let step = env.step(*at.back().unwrap(), rng);
+                    let step = env.step(action, rng);
 
-                    rtp.push_back(step.reward);
+                    pending.push_back((
+                        state.clone(),
+                        action,
+                        step.reward * self.config.reward_scale,
+                    ));
+                    episode_return += step.reward;
+                    episode_length += 1;
 
-                    if step.terminated || step.truncated {
+                    if step.terminated
+                        || step.truncated
+                        || episode_length == self.config.episode_length
+                    {
                         terminated = true;
-                    } else {
-                        st.push_back(step.observation);
-                        at.push_back(policy.sample_action(&st.back().unwrap(), rng));
                     }
-                } else {
-                    // peel off oldest ones
-                    st.pop_front();
-                    at.pop_front();
-                    rtp.pop_front();
+
+                    if step.terminated {
+                        bootstrap = None;
+                    } else {
+                        state = step.observation;
+                        action = DeepQPolicy::borrowed(
+                            &q,
+                            DeepQPolicyMode::SoftGreedy {
+                                epsilon: self.config.epsilon,
+                            },
+                        )
+                        .sample_action(&state, rng);
+                        bootstrap = Some((state.clone(), action));
+                    }
                 }
 
-                if t >= self.config.n {
-                    let t_s_left = Tensor::<TrainingBackend, 2>::from_data(
-                        TensorData::new(st.front().unwrap().to_vec(), [1, n_s]),
+                if pending.len() >= self.config.n || (terminated && !pending.is_empty()) {
+                    let (old_state, old_action, _) = pending.front().unwrap();
+                    let t_s_old = Tensor::<TrainingBackend, 2>::from_data(
+                        TensorData::new(old_state.to_vec(), [1, n_s]),
                         &device,
                     );
-                    let t_a_left = Tensor::<TrainingBackend, 2, Int>::from_data(
-                        TensorData::new(vec![*at.front().unwrap() as i64], [1, 1]),
+                    let t_a_old = Tensor::<TrainingBackend, 2, Int>::from_data(
+                        TensorData::new(vec![*old_action as i64], [1, 1]),
                         &device,
                     );
 
                     // g = n-step return + bootstrap tail
-                    let g: f64 = rtp
+                    let g: f64 = pending
                         .iter()
                         .enumerate()
-                        .map(|(i, rt)| self.config.gamma.powi(i as i32) * rt)
+                        .map(|(i, (_, _, reward))| self.config.gamma.powi(i as i32) * reward)
                         .sum();
 
                     // bootstrap tail
-                    let bootstrap_tail = if !terminated {
-                        let t_s_rght = Tensor::<TrainingBackend, 2>::from_data(
-                            TensorData::new(st.back().unwrap().to_vec(), [1, n_s]),
+                    let bootstrap_tail = if let Some((next_state, next_action)) = &bootstrap {
+                        let t_s_new = Tensor::<TrainingBackend, 2>::from_data(
+                            TensorData::new(next_state.to_vec(), [1, n_s]),
                             &device,
                         );
-                        let t_a_rght = Tensor::<TrainingBackend, 2, Int>::from_data(
-                            TensorData::new(vec![*at.back().unwrap() as i64], [1, n_s]),
+                        let t_a_new = Tensor::<TrainingBackend, 2, Int>::from_data(
+                            TensorData::new(vec![*next_action as i64], [1, 1]),
                             &device,
                         );
-                        let q_bootstrap = q.forward(t_s_rght).gather(1, t_a_rght).squeeze_dim(1);
+                        let q_bootstrap = q.forward(t_s_new).gather(1, t_a_new);
 
-                        self.config.gamma.powi(self.config.n as i32) * q_bootstrap
+                        self.config.gamma.powi(pending.len() as i32) * q_bootstrap
                     } else {
                         Tensor::<TrainingBackend, 2>::zeros([1, 1], &device)
                     };
 
                     // optimize td error
                     let td_target: Tensor<TrainingBackend, 2> = g + bootstrap_tail;
-                    let td_error = td_target.detach() - q.forward(t_s_left).gather(1, t_a_left);
+                    let td_error = td_target.detach() - q.forward(t_s_old).gather(1, t_a_old);
 
                     let loss = td_error.square();
+                    episode_loss += loss
+                        .clone()
+                        .into_data()
+                        .iter::<f64>()
+                        .next()
+                        .expect("loss tensor has one element");
                     let grad = GradientsParams::from_grads(loss.backward(), &q);
+                    episode_gradient_norm += q.gradient_norm(&grad);
                     q = optimizer.step(learning_rate, q, grad);
+                    pending.pop_front();
+                }
+                if terminated && pending.is_empty() {
+                    break;
                 }
             }
+
+            let step = Step::Episode(episode_index + 1);
+            reporter.record(
+                step,
+                &[
+                    ("train/return", episode_return),
+                    ("train/length", episode_length as f64),
+                    ("loss", episode_loss / episode_length as f64),
+                    ("grad/norm", episode_gradient_norm / episode_length as f64),
+                    ("optimizer/lr", learning_rate),
+                ],
+            );
+            let mut make_policy = || {
+                Box::new(DeepQPolicy::new(q.valid(), DeepQPolicyMode::Greedy))
+                    as Box<dyn crate::policy::DiscretePolicy<Observation = Array1<f64>>>
+            };
+            reporter.policy(step, &mut make_policy);
         }
 
         Ok(SolveResult {
@@ -211,5 +252,35 @@ impl ModelFreeSolver for ApproximateTD {
                 iterations: self.config.episodes,
             },
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::environment::FeatureEnvironment;
+    use crate::environments::grid_world;
+    use crate::reporting::{Reporter, ReporterConfig};
+    use rand::{SeedableRng, rngs::StdRng};
+
+    #[test]
+    fn trains_when_n_exceeds_episode_length() {
+        let model = grid_world(3).unwrap();
+        let mut environment = FeatureEnvironment::new(&model).unwrap();
+        let mut rng = StdRng::seed_from_u64(0);
+        let solver = ApproximateTD::new(ApproximateTDConfig {
+            n: 3,
+            episodes: 1,
+            episode_length: 2,
+            ..ApproximateTDConfig::default()
+        })
+        .unwrap();
+        let mut reporter = Reporter::new(ReporterConfig::default(), 0, None);
+
+        solver
+            .solve_with_reporter(&mut environment, &mut rng, &mut reporter)
+            .unwrap();
+
+        assert_eq!(reporter.into_history().len(), 1);
     }
 }

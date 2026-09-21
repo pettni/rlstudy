@@ -28,6 +28,17 @@ Run DQN on Gymnasium through the Python environment managed by `uv`:
 uv run cargo run -r -- solve --gym CartPole-v1 dqn
 ```
 
+Run four-step SARSA on MountainCar:
+
+```bash
+uv run cargo run -r -- solve --gym MountainCar-v0 --normalize-observations --gym-max-steps 1000 --config settings/approximate_td_for_mountain_car.yaml --evaluation-frequency episode:100 --evaluation-episodes 100 --evaluation-max-steps 200 approximate-td
+```
+
+Training allows 1,000 steps so the agent can discover the goal; evaluation is
+capped at the standard 200 steps. `--normalize-observations` rescales bounded
+observations to [-1, 1] in both environments. `reward_scale` scales only the TD
+targets, so training and evaluation returns remain in the original reward units.
+
 ## Plot results for tuned solvers
 
 Value iteration on grid world:

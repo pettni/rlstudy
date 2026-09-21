@@ -8,7 +8,7 @@ use ndarray::{Array1, Array2};
 use rand::{SeedableRng, rngs::StdRng};
 use rlstudy::algorithms::{ModelBasedSolver, ModelFreeSolver, SolveResult, TabularSolveResult};
 use rlstudy::environment::{Environment, FeatureEnvironment, TabularEnvironment};
-use rlstudy::environments::GymEnvironment;
+use rlstudy::environments::{GymEnvironment, GymOptions};
 use rlstudy::evaluation::{EvaluationStats, fixed_policy_values};
 use rlstudy::model::TabularModel;
 use rlstudy::reporting::{Frequency, HistoryRow, Reporter, ReporterConfig};
@@ -33,6 +33,12 @@ struct SolveArgs {
     grid_world: Option<PathBuf>,
     #[arg(long, conflicts_with = "grid_world")]
     gym: Option<String>,
+    /// Override Gymnasium's episode limit (independent of evaluation-max-steps).
+    #[arg(long, requires = "gym")]
+    gym_max_steps: Option<usize>,
+    /// Rescale bounded Gymnasium observations to [-1, 1].
+    #[arg(long, requires = "gym")]
+    normalize_observations: bool,
     #[arg(long)]
     config: Option<PathBuf>,
     #[command(flatten)]
@@ -58,7 +64,15 @@ fn solve(args: &SolveArgs) -> Result<(), Box<dyn std::error::Error>> {
     if !args.value_gamma.is_finite() || !(0.0..1.0).contains(&args.value_gamma) {
         return Err("value gamma must be finite and in [0, 1)".into());
     }
-    let mut system = build_system(args.grid_world.as_deref(), args.gym.as_deref())?;
+    let gym_options = GymOptions {
+        max_episode_steps: args.gym_max_steps,
+        normalize_observations: args.normalize_observations,
+    };
+    let mut system = build_system(
+        args.grid_world.as_deref(),
+        args.gym.as_deref(),
+        &gym_options,
+    )?;
     let (solver, parameters) = build_solver(&args.solver, args.config.as_deref())?;
     validate_frequency(&solver, args.reporting.evaluation_frequency)?;
     let mut rng = StdRng::seed_from_u64(args.seed);
@@ -68,6 +82,7 @@ fn solve(args: &SolveArgs) -> Result<(), Box<dyn std::error::Error>> {
         &mut rng,
         &args.reporting,
         args.gym.as_deref(),
+        &gym_options,
         args.seed ^ 0x6a09_e667_f3bc_c909,
     )?;
     let discrete_model = system
@@ -123,9 +138,11 @@ fn validate_frequency(solver: &SelectedSolver, frequency: Option<Frequency>) -> 
             Err("model-based solvers support iteration evaluation frequency".into())
         }
         (
-            SelectedSolver::MonteCarlo(_) | SelectedSolver::TD(_),
+            SelectedSolver::MonteCarlo(_)
+            | SelectedSolver::TD(_)
+            | SelectedSolver::ApproximateTD(_),
             Some(Frequency::PerIteration(_)),
-        ) => Err("tabular model-free solvers support episode evaluation frequency".into()),
+        ) => Err("solver supports episode evaluation frequency".into()),
         _ => Ok(()),
     }
 }
@@ -136,6 +153,7 @@ fn run_solver(
     rng: &mut dyn rand::Rng,
     reporting: &ReporterConfig,
     gym_id: Option<&str>,
+    gym_options: &GymOptions,
     evaluation_seed: u64,
 ) -> Result<(SelectedResult, EvaluationStats), Box<dyn std::error::Error>> {
     match solver {
@@ -204,7 +222,7 @@ fn run_solver(
                 }
                 SelectedSystem::Gym(environment) => {
                     let mut evaluation_environment =
-                        GymEnvironment::new(gym_id.expect("Gym ID is present"))?;
+                        GymEnvironment::new(gym_id.expect("Gym ID is present"), gym_options)?;
                     run_model_free(
                         &solver,
                         environment,
@@ -233,7 +251,7 @@ fn run_solver(
                 }
                 SelectedSystem::Gym(environment) => {
                     let mut evaluation_environment =
-                        GymEnvironment::new(gym_id.expect("Gym ID is present"))?;
+                        GymEnvironment::new(gym_id.expect("Gym ID is present"), gym_options)?;
                     run_model_free(
                         &solver,
                         environment,
@@ -262,7 +280,36 @@ fn run_solver(
                 }
                 SelectedSystem::Gym(environment) => {
                     let mut evaluation_environment =
-                        GymEnvironment::new(gym_id.expect("Gym ID is present"))?;
+                        GymEnvironment::new(gym_id.expect("Gym ID is present"), gym_options)?;
+                    run_model_free(
+                        &solver,
+                        environment,
+                        &mut evaluation_environment,
+                        rng,
+                        reporting,
+                        evaluation_seed,
+                    )?
+                }
+            };
+            Ok((SelectedResult::Neural(result, history), stats))
+        }
+        SelectedSolver::ApproximateTD(solver) => {
+            let (result, history, stats) = match system {
+                SelectedSystem::Model(model) => {
+                    let mut environment = FeatureEnvironment::new(model)?;
+                    let mut evaluation_environment = FeatureEnvironment::new(model)?;
+                    run_model_free(
+                        &solver,
+                        &mut environment,
+                        &mut evaluation_environment,
+                        rng,
+                        reporting,
+                        evaluation_seed,
+                    )?
+                }
+                SelectedSystem::Gym(environment) => {
+                    let mut evaluation_environment =
+                        GymEnvironment::new(gym_id.expect("Gym ID is present"), gym_options)?;
                     run_model_free(
                         &solver,
                         environment,
@@ -385,8 +432,8 @@ struct VisualizationResult<'a> {
 mod tests {
     use super::*;
     use rlstudy::algorithms::{
-        ActorCriticConfig, DqnConfig, MonteCarloConfig, ReinforceConfig, TDConfig,
-        ValueIterationConfig,
+        ActorCriticConfig, ApproximateTDConfig, DqnConfig, MonteCarloConfig, ReinforceConfig,
+        TDConfig, ValueIterationConfig,
     };
 
     fn solver(arguments: &[&str]) -> Solver {
@@ -435,6 +482,13 @@ mod tests {
         assert_eq!(
             config,
             yaml_serde::from_str::<ActorCriticConfig>("{}").unwrap()
+        );
+        let Solver::ApproximateTD(config) = solver(&["solve", "approximate-td"]) else {
+            unreachable!()
+        };
+        assert_eq!(
+            config,
+            yaml_serde::from_str::<ApproximateTDConfig>("{}").unwrap()
         );
     }
 

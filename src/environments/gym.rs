@@ -4,6 +4,12 @@ use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyTuple};
 use rand::RngExt;
 
+#[derive(Default)]
+pub struct GymOptions {
+    pub max_episode_steps: Option<usize>,
+    pub normalize_observations: bool,
+}
+
 pub struct GymEnvironment {
     env: Py<PyAny>,
     observation_space: Space,
@@ -11,11 +17,20 @@ pub struct GymEnvironment {
 }
 
 impl GymEnvironment {
-    pub fn new(id: &str) -> PyResult<Self> {
+    pub fn new(id: &str, options: &GymOptions) -> PyResult<Self> {
         Python::attach(|py| {
-            let env = PyModule::import(py, "gymnasium")?
-                .call_method1("make", (id,))?
-                .unbind();
+            let gym = PyModule::import(py, "gymnasium")?;
+            let kwargs = PyDict::new(py);
+            if let Some(limit) = options.max_episode_steps {
+                kwargs.set_item("max_episode_steps", limit)?;
+            }
+            let mut env = gym.call_method("make", (id,), Some(&kwargs))?;
+            if options.normalize_observations {
+                env = gym
+                    .getattr("wrappers")?
+                    .call_method1("RescaleObservation", (env, -1.0, 1.0))?;
+            }
+            let env = env.unbind();
             let bound = env.bind(py);
             let observation_space = bound.getattr("observation_space")?;
             let action_space = bound.getattr("action_space")?;

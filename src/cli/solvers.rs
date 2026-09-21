@@ -1,8 +1,8 @@
 use clap::Subcommand;
 use rlstudy::algorithms::{
-    ActorCritic, ActorCriticConfig, DeepQLearning, DqnArgs, MonteCarlo, MonteCarloConfig,
-    PolicyIterationConfig, Reinforce, ReinforceConfig, TD, TDConfig, TruncatedPolicyIteration,
-    TruncatedPolicyIterationConfig, ValueIterationConfig,
+    ActorCritic, ActorCriticConfig, ApproximateTD, ApproximateTDConfig, DeepQLearning, DqnArgs,
+    MonteCarlo, MonteCarloConfig, PolicyIterationConfig, Reinforce, ReinforceConfig, TD, TDConfig,
+    TruncatedPolicyIteration, TruncatedPolicyIterationConfig, ValueIterationConfig,
 };
 use serde::{Serialize, de::DeserializeOwned};
 use std::{fs, path::Path};
@@ -17,6 +17,7 @@ pub(super) enum Solver {
     Dqn(DqnArgs),
     Reinforce(ReinforceConfig),
     ActorCritic(ActorCriticConfig),
+    ApproximateTD(ApproximateTDConfig),
 }
 
 impl Solver {
@@ -30,6 +31,7 @@ impl Solver {
             Self::Dqn(_) => "dqn",
             Self::Reinforce(_) => "reinforce",
             Self::ActorCritic(_) => "actor-critic",
+            Self::ApproximateTD(_) => "approximate-td",
         }
     }
 }
@@ -41,6 +43,7 @@ pub(super) enum SelectedSolver {
     Dqn(DeepQLearning),
     Reinforce(Reinforce),
     ActorCritic(ActorCritic),
+    ApproximateTD(ApproximateTD),
 }
 
 pub(super) fn build_solver(
@@ -102,6 +105,13 @@ pub(super) fn build_solver(
                 parameters,
             ))
         }
+        Solver::ApproximateTD(config) => {
+            let (config, parameters) = resolve_config(config, config_path)?;
+            Ok((
+                SelectedSolver::ApproximateTD(ApproximateTD::new(config)?),
+                parameters,
+            ))
+        }
     }
 }
 
@@ -134,7 +144,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use rlstudy::algorithms::{ActorCriticConfig, DqnConfig, ReinforceConfig};
+    use rlstudy::algorithms::{ActorCriticConfig, ApproximateTDConfig, DqnConfig, ReinforceConfig};
 
     #[test]
     fn dqn_yaml_uses_defaults_for_missing_fields() {
@@ -177,5 +187,15 @@ mod tests {
         .unwrap();
 
         assert!(rlstudy::algorithms::ActorCritic::new(config).is_ok());
+    }
+
+    #[test]
+    fn checked_in_approximate_td_config_parses() {
+        let config: ApproximateTDConfig = yaml_serde::from_str(include_str!(
+            "../../settings/approximate_td_for_mountain_car.yaml"
+        ))
+        .unwrap();
+
+        assert!(rlstudy::algorithms::ApproximateTD::new(config).is_ok());
     }
 }
