@@ -4,6 +4,7 @@ use crate::policy::DiscretePolicy;
 use crate::reporting::{AbstractReporter, Reporter, ReporterConfig};
 
 pub mod actor_critic;
+pub mod approximate_td;
 pub mod dqn;
 pub mod monte_carlo;
 pub mod policy_iteration;

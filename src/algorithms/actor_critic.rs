@@ -17,8 +17,6 @@ use burn::{
 use clap::Args;
 use ndarray::Array1;
 use rand::RngExt;
-#[cfg(test)]
-use rand::{SeedableRng, rngs::StdRng};
 use serde::{Deserialize, Serialize};
 
 type TrainingBackend = Autodiff<Flex>;
@@ -241,6 +239,7 @@ mod tests {
     use crate::environment::FeatureEnvironment;
     use crate::environments::grid_world;
     use crate::reporting::{Frequency, Reporter, ReporterConfig};
+    use rand::{SeedableRng, rngs::StdRng};
 
     #[test]
     fn configuration_is_validated() {
