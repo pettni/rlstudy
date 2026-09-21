@@ -1,12 +1,14 @@
-gamma: 1.0
-actor_update: mc
-critic_update: mc
-learning_rate:
+gamma: 0.99
+actor_learning_rate:
   type: stepwise
-  initial: 0.01
+  initial: 0.001
   changes:
-    - [500, 0.0005]
-hidden_dims: 16
-episodes: 500
+    - [200, 0.0001]
+critic_learning_rate:
+  type: stepwise
+  initial: 0.003
+  changes:
+    - [200, 0.0003]
+hidden_dims: 128
+episodes: 250
 episode_length: 500
-gradient_clip_value: 100

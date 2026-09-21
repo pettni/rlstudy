@@ -217,7 +217,36 @@ fn run_solver(
             };
             Ok((SelectedResult::Neural(result, history), stats))
         }
-        SelectedSolver::PolicyGradient(solver) => {
+        SelectedSolver::Reinforce(solver) => {
+            let (result, history, stats) = match system {
+                SelectedSystem::Model(model) => {
+                    let mut environment = FeatureEnvironment::new(model)?;
+                    let mut evaluation_environment = FeatureEnvironment::new(model)?;
+                    run_model_free(
+                        &solver,
+                        &mut environment,
+                        &mut evaluation_environment,
+                        rng,
+                        reporting,
+                        evaluation_seed,
+                    )?
+                }
+                SelectedSystem::Gym(environment) => {
+                    let mut evaluation_environment =
+                        GymEnvironment::new(gym_id.expect("Gym ID is present"))?;
+                    run_model_free(
+                        &solver,
+                        environment,
+                        &mut evaluation_environment,
+                        rng,
+                        reporting,
+                        evaluation_seed,
+                    )?
+                }
+            };
+            Ok((SelectedResult::Neural(result, history), stats))
+        }
+        SelectedSolver::ActorCritic(solver) => {
             let (result, history, stats) = match system {
                 SelectedSystem::Model(model) => {
                     let mut environment = FeatureEnvironment::new(model)?;
@@ -356,7 +385,8 @@ struct VisualizationResult<'a> {
 mod tests {
     use super::*;
     use rlstudy::algorithms::{
-        DqnConfig, MonteCarloConfig, PolicyGradientConfig, TDConfig, ValueIterationConfig,
+        ActorCriticConfig, DqnConfig, MonteCarloConfig, ReinforceConfig, TDConfig,
+        ValueIterationConfig,
     };
 
     fn solver(arguments: &[&str]) -> Solver {
@@ -392,12 +422,19 @@ mod tests {
         };
         let config: DqnConfig = config.into();
         assert_eq!(config, yaml_serde::from_str::<DqnConfig>("{}").unwrap());
-        let Solver::PolicyGradient(config) = solver(&["solve", "policy-gradient"]) else {
+        let Solver::Reinforce(config) = solver(&["solve", "reinforce"]) else {
             unreachable!()
         };
         assert_eq!(
             config,
-            yaml_serde::from_str::<PolicyGradientConfig>("{}").unwrap()
+            yaml_serde::from_str::<ReinforceConfig>("{}").unwrap()
+        );
+        let Solver::ActorCritic(config) = solver(&["solve", "actor-critic"]) else {
+            unreachable!()
+        };
+        assert_eq!(
+            config,
+            yaml_serde::from_str::<ActorCriticConfig>("{}").unwrap()
         );
     }
 
@@ -414,7 +451,7 @@ mod tests {
             "20",
             "--value-gamma",
             "0.5",
-            "policy-gradient",
+            "reinforce",
         ])
         .unwrap()
         .command;

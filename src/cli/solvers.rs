@@ -1,8 +1,8 @@
 use clap::Subcommand;
 use rlstudy::algorithms::{
-    DeepQLearning, DqnArgs, MonteCarlo, MonteCarloConfig, PolicyGradient, PolicyGradientConfig,
-    PolicyIterationConfig, TD, TDConfig, TruncatedPolicyIteration, TruncatedPolicyIterationConfig,
-    ValueIterationConfig,
+    ActorCritic, ActorCriticConfig, DeepQLearning, DqnArgs, MonteCarlo, MonteCarloConfig,
+    PolicyIterationConfig, Reinforce, ReinforceConfig, TD, TDConfig, TruncatedPolicyIteration,
+    TruncatedPolicyIterationConfig, ValueIterationConfig,
 };
 use serde::{Serialize, de::DeserializeOwned};
 use std::{fs, path::Path};
@@ -15,7 +15,8 @@ pub(super) enum Solver {
     MC(MonteCarloConfig),
     TD(TDConfig),
     Dqn(DqnArgs),
-    PolicyGradient(PolicyGradientConfig),
+    Reinforce(ReinforceConfig),
+    ActorCritic(ActorCriticConfig),
 }
 
 impl Solver {
@@ -27,7 +28,8 @@ impl Solver {
             Self::MC(_) => "mc",
             Self::TD(_) => "td",
             Self::Dqn(_) => "dqn",
-            Self::PolicyGradient(_) => "policy-gradient",
+            Self::Reinforce(_) => "reinforce",
+            Self::ActorCritic(_) => "actor-critic",
         }
     }
 }
@@ -37,7 +39,8 @@ pub(super) enum SelectedSolver {
     MonteCarlo(MonteCarlo),
     TD(TD),
     Dqn(DeepQLearning),
-    PolicyGradient(PolicyGradient),
+    Reinforce(Reinforce),
+    ActorCritic(ActorCritic),
 }
 
 pub(super) fn build_solver(
@@ -85,10 +88,17 @@ pub(super) fn build_solver(
             let parameters = serde_json::to_value(&config)?;
             Ok((SelectedSolver::Dqn(DeepQLearning::new(config)?), parameters))
         }
-        Solver::PolicyGradient(config) => {
+        Solver::Reinforce(config) => {
             let (config, parameters) = resolve_config(config, config_path)?;
             Ok((
-                SelectedSolver::PolicyGradient(PolicyGradient::new(config)?),
+                SelectedSolver::Reinforce(Reinforce::new(config)?),
+                parameters,
+            ))
+        }
+        Solver::ActorCritic(config) => {
+            let (config, parameters) = resolve_config(config, config_path)?;
+            Ok((
+                SelectedSolver::ActorCritic(ActorCritic::new(config)?),
                 parameters,
             ))
         }
@@ -124,8 +134,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use rlstudy::algorithms::DqnConfig;
-    use rlstudy::algorithms::PolicyGradientConfig;
+    use rlstudy::algorithms::{ActorCriticConfig, DqnConfig, ReinforceConfig};
 
     #[test]
     fn dqn_yaml_uses_defaults_for_missing_fields() {
@@ -153,10 +162,20 @@ mod tests {
 
     #[test]
     fn checked_in_policy_gradient_config_parses() {
-        let config: PolicyGradientConfig =
+        let config: ReinforceConfig =
             yaml_serde::from_str(include_str!("../../settings/reinforce_for_cartpole.yaml"))
                 .unwrap();
 
-        assert!(rlstudy::algorithms::PolicyGradient::new(config).is_ok());
+        assert!(rlstudy::algorithms::Reinforce::new(config).is_ok());
+    }
+
+    #[test]
+    fn checked_in_actor_critic_config_parses() {
+        let config: ActorCriticConfig = yaml_serde::from_str(include_str!(
+            "../../settings/actor_critic_for_cartpole.yaml"
+        ))
+        .unwrap();
+
+        assert!(rlstudy::algorithms::ActorCritic::new(config).is_ok());
     }
 }

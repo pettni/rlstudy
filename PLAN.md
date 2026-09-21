@@ -30,7 +30,7 @@ Develop a solid working understanding of the RL options for improving pretrained
 
 ## Current status
 
-As of 2026-09-19:
+As of 2026-09-20:
 
 - [x] Started reading Zhao end-to-end.
 - [x] Ordered Zhao and Sutton & Barto.
@@ -40,15 +40,18 @@ As of 2026-09-19:
 - [x] Implemented epsilon-greedy Monte Carlo control.
 - [x] Completed the Chapter 6 stochastic-approximation experiment.
 - [x] Implemented Sarsa, Expected Sarsa, and Zhao's on-policy Q-learning.
-- [x] Read and derived n-step Sarsa; implementation intentionally skipped.
+- [x] Read and derived tabular n-step Sarsa; plan to implement the neural semi-gradient version separately.
 - [x] Evaluated an agent-built Burn DQN prototype with a PyO3 Gymnasium bridge.
 - [x] Decided to continue neural RL in Rust/Burn based on the prototype.
 - [x] Refocused the final target on comparing RL options for learning from execution data.
 - [x] Added Grid World tests for the implemented algorithms.
 - [x] Personally implemented DQN on CartPole.
 - [x] Understood linear value-function approximation; implementation intentionally skipped because the shared approximation concept is clear and DNN experience directly supports the project goal.
+- [x] Implemented REINFORCE and a learned state-value baseline in the `Reinforce` solver.
+- [x] Compared Monte Carlo and one-step TD actor/critic targets on CartPole.
+- [x] Implemented online one-step actor–critic with per-transition updates; CartPole performance remains unresolved.
 
-The personal DQN implementation completes the Chapter 8 implementation checkpoint. The agent-built DQN prototype served as tooling validation only. Continue with Chapter 9 REINFORCE and its learned baseline, then Chapter 10 one-step actor–critic.
+The Chapter 8 DQN and Chapter 9 REINFORCE with baseline implementation checkpoints are complete. Online one-step actor–critic is implemented, but has not learned reliably on CartPole. Next, implement episodic semi-gradient n-step Sarsa as a separate neural value-based solver.
 
 ## Project
 
@@ -94,8 +97,9 @@ Read all ten chapters in order. Pair each major concept with a bounded teaching 
 - [x] **Chapter 7:** derive and understand n-step Sarsa; implementation intentionally skipped.
 - [x] **Chapter 8:** understand linear value-function approximation; implementation intentionally skipped in favor of direct DNN implementation.
 - [x] **Chapter 8:** personally implement a minimal Burn DQN on CartPole, using the prototype only as a reference after making an independent attempt.
-- [ ] **Chapter 9:** REINFORCE, then add a learned baseline.
-- [ ] **Chapter 10:** one-step actor–critic.
+- [x] **Chapter 9:** REINFORCE, then add a learned baseline.
+- [x] **Chapter 10:** implement and test online one-step actor–critic with per-transition updates.
+- [ ] **Sutton and Barto §10.2:** implement episodic semi-gradient n-step Sarsa separately from DQN; compare their targets and CartPole learning curves.
 
 Reuse Grid World through the tabular methods and compare learned values or policies with the dynamic-programming solution. Use one small benchmark for the deep methods so network and optimizer behavior can be studied without robotics complexity.
 
@@ -121,15 +125,15 @@ Before moving on, be able to explain:
 
 Before starting Spinning Up, read these short Sutton and Barto sections:
 
-- [ ] §6.7: maximization bias and Double Learning.
-- [ ] §§11.1–11.3: off-policy divergence and the deadly triad.
+- [x] §6.7: maximization bias and Double Learning.
+- [x] §§11.1–11.3: off-policy divergence and the deadly triad.
 
 ## Phase 2: Transition to deep RL with Spinning Up
 
 Start this phase after Zhao Chapter 10. Use [OpenAI Spinning Up](https://spinningup.openai.com/en/latest/) as the bridge from the book's derivations to practical deep RL, translating the relevant implementations into Rust/Burn.
 
-- [ ] Read the Spinning Up introduction and key concepts.
-- [ ] Read Sutton and Barto §§12.1–12.3 on λ-returns before studying PPO and generalized advantage estimation.
+- [x] Read the Spinning Up introduction and key concepts.
+- [x] Read Sutton and Barto §§12.1–12.3 on λ-returns before studying PPO and generalized advantage estimation.
 - [ ] Work through the VPG, PPO, TD3, and SAC explanations.
 - [ ] Compare the Zhao Rust/Burn REINFORCE and actor–critic implementations with Spinning Up's VPG formulation.
 - [ ] Personally implement PPO with generalized advantage estimation on one small continuous-control environment.
@@ -155,6 +159,8 @@ Connect actor–critic methods to the main ways execution data is used after beh
 - [ ] Study residual RL as a way to preserve a competent base policy while learning corrections.
 - [ ] Represent interventions explicitly and understand their connection to human-gated DAgger.
 - [ ] Build a decision table covering data access, exploration, conservatism, policy architecture, and expected failure modes for each route.
+
+Optional case study after PPO: examine [GRPO](https://arxiv.org/abs/2402.03300) for grouped simulator rollouts, using [TGRPO](https://arxiv.org/abs/2506.08440) as a robotics example. Compare its rollout cost and group-relative advantage signal with PPO before considering it for the project.
 
 Checkpoint: given a pretrained policy, dataset, simulator access, and correction budget, choose a plausible improvement method and explain the tradeoffs.
 
@@ -242,3 +248,5 @@ Use these in the roles below, not as a parallel reading backlog.
 | 2026-09-12 | Evaluated an agent-built Burn DQN prototype | Burn DQN reached a 297.4 greedy mean return versus a 27.6 random baseline; this validated Rust/Burn but did not count as a learning checkpoint | Continue Chapter 8 with linear value-function approximation, then implement DQN personally |
 | 2026-09-12 | Refocused the curriculum on learning from execution data | PPO and SAC remain foundations; the later phases compare online, off-policy-with-prior-data, offline, and policy-extraction routes | Continue Zhao Chapter 8 |
 | 2026-09-19 | Accepted DQN as the Chapter 8 implementation checkpoint | Linear approximation is understood; a separate implementation would add little toward the project goal | Establish REINFORCE learning behavior, add a learned baseline, then implement one-step actor–critic |
+| 2026-09-20 | Implemented REINFORCE and a learned baseline in Rust/Burn | The solver now supports Monte Carlo and one-step TD actor/critic targets and reports training and evaluation metrics | Compare update strategies on CartPole |
+| 2026-09-20 | Ablated CartPole policy-gradient settings | Monte Carlo actor and baseline reached a 496.5 mean sampled evaluation return across 10 seeds with the learning rate reduced after episode 250; episode-batch TD actor updates remained weak | Test online TD(0) updates after each transition |

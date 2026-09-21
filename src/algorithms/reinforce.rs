@@ -36,26 +36,24 @@ pub enum UpdateVariant {
 
 #[derive(Debug, Clone, PartialEq, Args, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
-pub struct PolicyGradientConfig {
-    #[arg(long, default_value_t = PolicyGradientConfig::default().gamma)]
+pub struct ReinforceConfig {
+    #[arg(long, default_value_t = ReinforceConfig::default().gamma)]
     pub gamma: f64,
     #[arg(long, default_value = "linear:0.001:0.0001:999")]
     pub learning_rate: Schedule,
-    #[arg(long, default_value_t = PolicyGradientConfig::default().hidden_dims)]
+    #[arg(long, default_value_t = ReinforceConfig::default().hidden_dims)]
     pub hidden_dims: usize,
-    #[arg(long, default_value_t = PolicyGradientConfig::default().episodes)]
+    #[arg(long, default_value_t = ReinforceConfig::default().episodes)]
     pub episodes: usize,
-    #[arg(long, default_value_t = PolicyGradientConfig::default().episode_length)]
+    #[arg(long, default_value_t = ReinforceConfig::default().episode_length)]
     pub episode_length: usize,
     #[arg(long)]
     gradient_clip_value: Option<f32>,
-    #[arg(long, value_enum, default_value_t = PolicyGradientConfig::default().actor_update)]
-    pub actor_update: UpdateVariant,
     #[arg(long)]
-    pub critic_update: Option<UpdateVariant>,
+    pub critic: Option<UpdateVariant>,
 }
 
-impl Default for PolicyGradientConfig {
+impl Default for ReinforceConfig {
     fn default() -> Self {
         Self {
             gamma: 0.9,
@@ -68,18 +66,17 @@ impl Default for PolicyGradientConfig {
             episodes: 1_000,
             episode_length: 100,
             gradient_clip_value: None,
-            actor_update: UpdateVariant::MC,
-            critic_update: None,
+            critic: None,
         }
     }
 }
 
-pub struct PolicyGradient {
-    config: PolicyGradientConfig,
+pub struct Reinforce {
+    config: ReinforceConfig,
 }
 
-impl PolicyGradient {
-    pub fn new(config: PolicyGradientConfig) -> Result<Self, String> {
+impl Reinforce {
+    pub fn new(config: ReinforceConfig) -> Result<Self, String> {
         if !config.gamma.is_finite() || !(0.0..=1.0).contains(&config.gamma) {
             return Err("gamma must be finite and in [0, 1]".into());
         }
@@ -113,14 +110,11 @@ impl PolicyGradient {
         if config.episodes == 0 || config.episode_length == 0 {
             return Err("episodes and episode length must be positive".into());
         }
-        if config.actor_update == UpdateVariant::TD && config.critic_update.is_none() {
-            return Err("TD actor updates require a learned critic baseline".into());
-        }
         Ok(Self { config })
     }
 }
 
-impl ModelFreeSolver for PolicyGradient {
+impl ModelFreeSolver for Reinforce {
     type Observation = Array1<f64>;
 
     fn solve_with_reporter(
@@ -144,7 +138,7 @@ impl ModelFreeSolver for PolicyGradient {
                 .with_grad_clipping(
                     self.config
                         .gradient_clip_value
-                        .map(GradientClippingConfig::Value),
+                        .map(GradientClippingConfig::Norm),
                 )
                 .init();
 
@@ -172,17 +166,10 @@ impl ModelFreeSolver for PolicyGradient {
             // w_{t+1} += alpha * gamma^t * delta_t * grad_w ln pi(a_t|s_t, w_t)
 
             // estimate of q(s_t, a_t)
-            let return_estimate_pi = match self.config.actor_update {
-                UpdateVariant::MC => episode_data.gt.clone(),
-                UpdateVariant::TD => {
-                    let vtp = v.forward(episode_data.stp.clone()).squeeze_dim(1);
-                    episode_data.rtp.clone()
-                        + self.config.gamma * vtp * episode_data.live.clone().float()
-                }
-            };
+            let return_estimate_pi = episode_data.gt.clone();
 
             // advantage
-            let delta_pi = if let Some(_) = self.config.critic_update {
+            let delta_pi = if let Some(_) = self.config.critic {
                 return_estimate_pi - v.forward(episode_data.st.clone()).squeeze_dim(1)
             } else {
                 return_estimate_pi
@@ -208,7 +195,7 @@ impl ModelFreeSolver for PolicyGradient {
 
             // w_{t+1} += alpha * delta_t * grad_w v(s_t|w_t)
 
-            if let Some(method) = self.config.critic_update {
+            if let Some(method) = self.config.critic {
                 let return_estimate_v = match method {
                     UpdateVariant::MC => episode_data.gt,
                     UpdateVariant::TD => {
@@ -379,24 +366,24 @@ mod tests {
     #[test]
     fn configuration_is_validated() {
         assert!(
-            PolicyGradient::new(PolicyGradientConfig {
+            Reinforce::new(ReinforceConfig {
                 episodes: 0,
-                ..PolicyGradientConfig::default()
+                ..ReinforceConfig::default()
             })
             .is_err()
         );
         assert!(
-            PolicyGradient::new(PolicyGradientConfig {
+            Reinforce::new(ReinforceConfig {
                 learning_rate: Schedule::Constant { value: 0.0 },
-                ..PolicyGradientConfig::default()
+                ..ReinforceConfig::default()
             })
             .is_err()
         );
-        assert!(PolicyGradient::new(PolicyGradientConfig::default()).is_ok());
+        assert!(Reinforce::new(ReinforceConfig::default()).is_ok());
         assert!(
-            PolicyGradient::new(PolicyGradientConfig {
+            Reinforce::new(ReinforceConfig {
                 gamma: 1.0,
-                ..PolicyGradientConfig::default()
+                ..ReinforceConfig::default()
             })
             .is_ok()
         );
@@ -407,10 +394,10 @@ mod tests {
         let model = grid_world(3).unwrap();
         let mut environment = FeatureEnvironment::new(&model).unwrap();
         let mut rng = StdRng::seed_from_u64(0);
-        let solver = PolicyGradient::new(PolicyGradientConfig {
+        let solver = Reinforce::new(ReinforceConfig {
             episodes: 2,
             episode_length: 2,
-            ..PolicyGradientConfig::default()
+            ..ReinforceConfig::default()
         })
         .unwrap();
 
