@@ -60,5 +60,5 @@ uv run cargo run -r -- solve --evaluation-frequency 10 --evaluation-max-steps 50
 
 REINFORCE on CartPole:
 ```bash
-uv run cargo run -r -- solve --evaluation-frequency 10 --evaluation-max-steps 500 --json --gym CartPole-v1 --config settings/reinforce_for_cartpole.yaml policy-gradient | uv run scripts/plot_solver.py | icat
+uv run cargo run -r -- solve --evaluation-frequency 10 --evaluation-max-steps 500 --json --gym CartPole-v1 --config settings/reinforce_for_cartpole.yaml reinforce | uv run scripts/plot_solver.py | icat
 ```

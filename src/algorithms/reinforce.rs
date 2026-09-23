@@ -1,20 +1,16 @@
 use crate::algorithms::{ModelFreeSolver, SolveResult, SolveStatus};
-use crate::environment::{Environment, Space};
+use crate::environment::{Environment, Rollout, Space};
 use crate::network::mlp::MlpModel;
-use crate::policy::{
-    Policy,
-    dq::{DeepQPolicy, DeepQPolicyMode},
-};
+use crate::policy::dq::{DeepQPolicy, DeepQPolicyMode};
 use crate::reporting::{AbstractReporter, Step};
 use crate::schedule::Schedule;
+use crate::transition_buffer::TransitionBuffer;
 use burn::grad_clipping::GradientClippingConfig;
-use burn::tensor::Bool;
 use burn::{
-    Tensor,
     backend::{Autodiff, Flex, flex::FlexDevice},
     module::AutodiffModule,
     optim::{Adam, AdamConfig, GradientsParams, Optimizer, adaptor::OptimizerAdaptor},
-    tensor::{Int, TensorData, activation::log_softmax, backend::Backend},
+    tensor::{activation::log_softmax, backend::Backend},
 };
 use clap::{Args, ValueEnum};
 use ndarray::Array1;
@@ -120,43 +116,39 @@ impl ModelFreeSolver for Reinforce {
 
         let mut pi = MlpModel::new(n_s, self.config.hidden_dims, n_a, &device);
         let mut v = MlpModel::new(n_s, self.config.hidden_dims, 1, &device);
+        let mut buffer = TransitionBuffer::<usize>::with_capacity(self.config.episode_length, None);
 
         for episode_index in 0..self.config.episodes {
+            buffer.clear();
             let policy = DeepQPolicy::borrowed(&pi, DeepQPolicyMode::SoftMax);
-            let s0 = env.reset(rng);
-
-            let episode_data = sample_episode(
-                s0,
-                self.config.episode_length,
-                &policy,
-                self.config.gamma,
-                env,
-                rng,
-            );
-            let episode_length = episode_data.at.shape()[0];
+            let mut rollout = Rollout::new(env, rng);
+            for _ in 0..self.config.episode_length {
+                if buffer.fill_one(&mut rollout, &policy, rng) {
+                    break;
+                }
+            }
+            let episode_length = buffer.len();
+            let batch = buffer.tensor_data();
+            let returns = batch.discounted_returns_no_bootstrapping(self.config.gamma);
 
             // ACTOR UPDATE
 
             // w_{t+1} += alpha * gamma^t * delta_t * grad_w ln pi(a_t|s_t, w_t)
 
-            // estimate of q(s_t, a_t)
-            let return_estimate_pi = episode_data.gt.clone();
-
             // advantage
             let delta_pi = if let Some(_) = self.config.critic {
-                return_estimate_pi - v.forward(episode_data.st.clone()).squeeze_dim(1)
+                returns.clone() - v.forward(batch.s.clone()).squeeze_dim(1)
             } else {
-                return_estimate_pi
+                returns.clone()
             };
+            let delta_pi = batch.discount_from_episode_start(delta_pi, self.config.gamma);
 
-            let log_probs = log_softmax(pi.forward(episode_data.st.clone()), 1); // [T, A]
+            let log_probs = log_softmax(pi.forward(batch.s.clone()), 1); // [T, A]
             let ln_pi = log_probs
                 .clone()
-                .gather(1, episode_data.at.reshape([-1, 1]))
+                .gather(1, batch.a.reshape([-1, 1]))
                 .squeeze_dim(1);
-            let pi_loss = (episode_data.gammat * delta_pi.detach() * ln_pi)
-                .sum()
-                .neg();
+            let pi_loss = (delta_pi.detach() * ln_pi).sum().neg();
             let grad_pi = GradientsParams::from_grads(pi_loss.backward(), &pi);
 
             // observability
@@ -171,14 +163,15 @@ impl ModelFreeSolver for Reinforce {
 
             if let Some(method) = self.config.critic {
                 let return_estimate_v = match method {
-                    UpdateVariant::MC => episode_data.gt,
+                    UpdateVariant::MC => returns,
                     UpdateVariant::TD => {
-                        let vtp = v.forward(episode_data.stp).squeeze_dim(1);
-                        episode_data.rtp + self.config.gamma * vtp * episode_data.live.float()
+                        let vtp = v.forward(batch.sp).squeeze_dim(1);
+                        let live = batch.terminated.bool_not().float();
+                        batch.r.clone() + self.config.gamma * vtp * live
                     }
                 };
 
-                let vt = v.forward(episode_data.st).squeeze_dim(1);
+                let vt = v.forward(batch.s).squeeze_dim(1);
                 let delta_v = return_estimate_v - vt.clone();
                 let loss = (delta_v.detach() * vt).sum().neg();
                 let grad_v = GradientsParams::from_grads(loss.backward(), &v);
@@ -189,7 +182,16 @@ impl ModelFreeSolver for Reinforce {
             reporter.record(
                 Step::Episode(episode_index + 1),
                 &[
-                    ("train/return", episode_data.episode_return),
+                    (
+                        "train/return",
+                        batch
+                            .r
+                            .sum()
+                            .into_data()
+                            .iter::<f64>()
+                            .next()
+                            .expect("return tensor has one element"),
+                    ),
                     ("train/length", episode_length as f64),
                     (
                         "policy/entropy",
@@ -219,113 +221,6 @@ impl ModelFreeSolver for Reinforce {
                 iterations: self.config.episodes,
             },
         })
-    }
-}
-
-struct EpisodeData {
-    // [s0, ..., s_{T-1}]
-    st: Tensor<TrainingBackend, 2>,
-    // [a0, ..., a_{T-1}]
-    at: Tensor<TrainingBackend, 1, Int>,
-    // [r1, ..., r_T]
-    rtp: Tensor<TrainingBackend, 1>,
-    // [s1, ..., s_T]
-    stp: Tensor<TrainingBackend, 2>,
-    // [g0, ..., g_{T-1}] s.t. g_t = r_{t+1} + gamma r_{t+2} + ...
-    gt: Tensor<TrainingBackend, 1>,
-    // [1, gamma, gamma^2, ...]
-    gammat: Tensor<TrainingBackend, 1>,
-    // [l1, ..., l_{t}]  s.t. lt is 1. if episode is not terminated
-    live: Tensor<TrainingBackend, 1, Bool>,
-    // \sum_t r_t
-    episode_return: f64,
-}
-
-fn sample_episode(
-    s0: Array1<f64>,
-    max_episode_length: usize,
-    policy: &DeepQPolicy<Autodiff<Flex>, &MlpModel<Autodiff<Flex>>>,
-    gamma: f64,
-    env: &mut dyn Environment<Observation = Array1<f64>, Action = usize>,
-    rng: &mut dyn rand::Rng,
-) -> EpisodeData {
-    let Space::Continuous { dim: n_s } = env.state_space() else {
-        panic!("Invalid");
-    };
-
-    let mut states = Vec::with_capacity(max_episode_length * n_s);
-    let mut actions = Vec::with_capacity(max_episode_length);
-    let mut rewards = Vec::with_capacity(max_episode_length);
-    let mut next_states = Vec::with_capacity(max_episode_length * n_s);
-    let mut gammas = Vec::with_capacity(max_episode_length);
-    let mut live = Vec::with_capacity(max_episode_length);
-
-    let mut s = s0;
-    for _ in 0..max_episode_length {
-        let a = policy.sample_action(&s, rng);
-        let step = env.step(a, rng);
-
-        states.extend(s.iter().copied());
-        actions.push(a as i64);
-        rewards.push(step.reward);
-        next_states.extend(step.observation.iter().copied());
-
-        if gammas.is_empty() {
-            gammas.push(1.);
-        } else {
-            gammas.push(gammas.last().unwrap() * gamma);
-        }
-
-        live.push(!step.terminated);
-
-        if step.terminated || step.truncated {
-            break;
-        }
-
-        s = step.observation;
-    }
-
-    let mut returns = Vec::with_capacity(max_episode_length);
-    let mut gt: f64 = 0.0;
-    let episode_return = rewards.iter().sum();
-    for rt in rewards.iter().rev() {
-        gt = rt + gamma * gt;
-        returns.push(gt);
-    }
-    returns.reverse();
-
-    let episode_length = actions.len();
-
-    EpisodeData {
-        st: Tensor::<TrainingBackend, 2>::from_data(
-            TensorData::new(states, [episode_length, n_s]),
-            &FlexDevice,
-        ),
-        at: Tensor::<TrainingBackend, 1, Int>::from_data(
-            TensorData::new(actions, [episode_length]),
-            &FlexDevice,
-        ),
-        rtp: Tensor::<TrainingBackend, 1>::from_data(
-            TensorData::new(rewards, [episode_length]),
-            &FlexDevice,
-        ),
-        stp: Tensor::<TrainingBackend, 2>::from_data(
-            TensorData::new(next_states, [episode_length, n_s]),
-            &FlexDevice,
-        ),
-        gt: Tensor::<TrainingBackend, 1>::from_data(
-            TensorData::new(returns, [episode_length]),
-            &FlexDevice,
-        ),
-        gammat: Tensor::<TrainingBackend, 1>::from_data(
-            TensorData::new(gammas, [episode_length]),
-            &FlexDevice,
-        ),
-        live: Tensor::<TrainingBackend, 1, Bool>::from_data(
-            TensorData::new(live, [episode_length]),
-            &FlexDevice,
-        ),
-        episode_return,
     }
 }
 

@@ -1,18 +1,17 @@
-mod replay_buffer;
 mod trainer;
 
-use self::replay_buffer::{ReplayBuffer, Transition};
 use self::trainer::DqnTrainer;
 use crate::algorithms::{ModelFreeSolver, SolveResult, SolveStatus, validate_gamma};
-use crate::environment::{Environment, Space};
+use crate::environment::{Environment, Rollout, Space};
 pub use crate::network::loss::Loss;
 use crate::policy::{
-    DiscretePolicy, Policy,
+    DiscretePolicy,
     dq::{DeepQPolicy, DeepQPolicyMode},
     uniform::UniformPolicy,
 };
 use crate::reporting::{AbstractReporter, Step};
 pub use crate::schedule::Schedule;
+use crate::transition_buffer::{Transition, TransitionBuffer};
 use clap::{Args, ValueEnum};
 use ndarray::Array1;
 use rand::RngExt;
@@ -182,8 +181,8 @@ impl ModelFreeSolver for DeepQLearning {
             return Err("DQN requires a discrete action space".into());
         };
 
-        let mut s = env.reset(rng);
-        let f_dim = s.len();
+        let mut rollout = Rollout::new(env, rng);
+        let f_dim = rollout.observation().len();
         let default_behavior_policy = UniformPolicy::new(n_a);
         let behavior_policy = self
             .behavior_policy
@@ -191,25 +190,13 @@ impl ModelFreeSolver for DeepQLearning {
             .unwrap_or(&default_behavior_policy);
 
         // fill up initial replay buffer
-        let mut buffer = ReplayBuffer::<Array1<f64>, usize>::new(self.config.replay_capacity);
-        for _ in 0..self.config.warm_up_transitions {
-            let a = behavior_policy.sample_action(&s, rng);
-            let step = env.step(a, rng);
-            let done = step.terminated || step.truncated;
-
-            buffer.push(Transition {
-                state: s,
-                action: a,
-                reward: step.reward,
-                next_state: step.observation.clone(),
-                terminated: step.terminated,
-            });
-            s = if done {
-                env.reset(rng)
-            } else {
-                step.observation
-            };
-        }
+        let mut buffer = TransitionBuffer::new(Some(self.config.replay_capacity));
+        buffer.fill(
+            &mut rollout,
+            behavior_policy,
+            rng,
+            self.config.warm_up_transitions,
+        );
 
         let mut trainer = DqnTrainer::new(
             f_dim,
@@ -221,7 +208,7 @@ impl ModelFreeSolver for DeepQLearning {
         );
         let mut iter = 0;
         for episode in 0..self.config.episodes {
-            let mut s = env.reset(rng);
+            rollout.reset(rng);
             let learning_rate = self.config.learning_rate.value(episode);
             let mut episode_return = 0.0;
             let mut episode_loss = 0.0;
@@ -230,26 +217,28 @@ impl ModelFreeSolver for DeepQLearning {
 
             for step_index in 0.. {
                 let epsilon = self.config.epsilon_schedule.value(iter);
-                let a = trainer
-                    .policy_view()
-                    .epsilon_greedy_action(&s, epsilon, rng);
-                let step = env.step(a, rng);
+                let a = trainer.policy_view().epsilon_greedy_action(
+                    rollout.observation(),
+                    epsilon,
+                    rng,
+                );
+                let s = rollout.observation().clone();
+                let step = rollout.step(a, rng);
                 episode_return += step.reward;
                 episode_length = step_index + 1;
 
                 buffer.push(Transition {
-                    state: s,
-                    action: a,
-                    reward: step.reward,
-                    next_state: step.observation.clone(),
+                    s,
+                    a,
+                    r: step.reward,
+                    sp: step.observation,
                     terminated: step.terminated,
+                    truncated: step.truncated,
                 });
 
-                s = step.observation;
-
-                let batch = buffer.sample(self.config.batch_size, rng);
+                let batch = buffer.random_batch_tensor_data(self.config.batch_size, rng);
                 let (new_trainer, loss, gradient_norm) =
-                    trainer.update(&batch, learning_rate, self.config.gamma, self.config.loss);
+                    trainer.update(batch, learning_rate, self.config.gamma, self.config.loss);
                 trainer = new_trainer;
 
                 match self.config.target_update {

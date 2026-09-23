@@ -28,14 +28,15 @@ figure, axes = plt.subplots(
 )
 for axis, ((unit, name), points) in zip(axes.flat, sorted(series.items())):
     steps, values = zip(*points)
-    if unit == "episode" and not name.startswith("eval/"):
+    if not name.startswith("eval/"):
+        window = 100 if unit == "episode" else 10
         axis.plot(steps, values, alpha=0.25, label="Raw")
         averages = [
-            sum(values[max(0, index - 99) : index + 1])
-            / min(index + 1, 100)
+            sum(values[max(0, index - window + 1) : index + 1])
+            / min(index + 1, window)
             for index in range(len(values))
         ]
-        axis.plot(steps, averages, label="Trailing 100 episodes")
+        axis.plot(steps, averages, label=f"Trailing {window} {unit}s")
         axis.legend()
     else:
         axis.plot(steps, values, marker="o" if name.startswith("eval/") else None)

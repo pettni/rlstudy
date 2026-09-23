@@ -59,36 +59,20 @@ pub struct TransitionBufferTensorData<A: ActionType> {
 }
 
 impl<A: ActionType> TransitionBufferTensorData<A> {
+    fn boundaries(&self) -> Tensor<TrainingBackend, 1, Bool> {
+        self.terminated.clone().bool_or(self.truncated.clone())
+    }
+
     /// Generalized advantages GAE_t = delta_t + gamma * lambda * delta_{t+1} + ...
     pub fn gae<F>(&self, value: F, gamma: f64, lambda: f64) -> Tensor<TrainingBackend, 1>
     where
         F: Fn(Tensor<TrainingBackend, 2>) -> Tensor<TrainingBackend, 1>,
     {
-        let deltas = self.td_residuals(value, gamma);
-        let deltas = deltas.into_data().iter::<f64>().collect::<Vec<_>>();
-
-        let boundaries = self
-            .terminated
-            .clone()
-            .bool_or(self.truncated.clone())
-            .into_data()
-            .iter::<bool>()
-            .collect::<Vec<_>>();
-
-        let mut counter = 0.0;
-
-        let mut results = Vec::with_capacity(deltas.len());
-        for (&value, &boundary) in deltas.iter().zip(&boundaries).rev() {
-            counter = if boundary {
-                value
-            } else {
-                value + gamma * lambda * counter
-            };
-            results.push(counter);
-        }
-        results.reverse();
-
-        Tensor::from_data(TensorData::new(results, [deltas.len()]), &FlexDevice)
+        segmented_discounted_cumsum(
+            self.td_residuals(value, gamma),
+            self.boundaries(),
+            gamma * lambda,
+        )
     }
 
     /// Compute temporal difference (TD) residuals delta_t = r_t + gamma * V(s_{t+1}) - V(s_t)
@@ -104,16 +88,36 @@ impl<A: ActionType> TransitionBufferTensorData<A> {
         self.r.clone() + gamma * next_values - values
     }
 
-    /// Compute R_t = r_t + gamma r_{t+1} + gamma^2 r_{t+2} + ...
+    /// Compute G_t = r_t + gamma r_{t+1} + gamma^2 r_{t+2} + ...
     ///
     /// Bootstraps truncated episodes and the last transition if it doesn't terminate.
     ///
-    /// Uses the identity R_t = V_t + GAE(lambda=1)
+    /// Uses the identity G_t = V_t + GAE(lambda=1). When discounting from the
+    /// episode start, the first transition in the buffer is treated as t = 0.
     pub fn discounted_returns<F>(&self, value: F, gamma: f64) -> Tensor<TrainingBackend, 1>
     where
         F: Fn(Tensor<TrainingBackend, 2>) -> Tensor<TrainingBackend, 1>,
     {
         value(self.s.clone()).detach() + self.gae(value, gamma, 1.0)
+    }
+
+    /// Compute discounted returns with V(s) = 0.
+    pub fn discounted_returns_no_bootstrapping(&self, gamma: f64) -> Tensor<TrainingBackend, 1> {
+        self.discounted_returns(
+            |states| Tensor::zeros([states.shape()[0]], &FlexDevice),
+            gamma,
+        )
+    }
+
+    /// Discount 'values' from sequence start
+    ///
+    ///  v_t -> gamma^t v_t
+    pub fn discount_from_episode_start(
+        &self,
+        values: Tensor<TrainingBackend, 1>,
+        gamma: f64,
+    ) -> Tensor<TrainingBackend, 1> {
+        values * discounts_from_episode_start(self.boundaries(), gamma)
     }
 }
 
@@ -207,14 +211,15 @@ impl<A: ActionType> TransitionBuffer<A> {
     }
 
     /// Take one environment step and add its transition to the buffer.
-    pub fn fill_one<E>(
+    pub fn fill_one<E, P>(
         &mut self,
         rollout: &mut Rollout<'_, E>,
-        pi: &dyn Policy<Observation = Array1<f64>, Action = A>,
+        pi: &P,
         rng: &mut dyn rand::Rng,
     ) -> bool
     where
         E: Environment<Observation = Array1<f64>, Action = A> + ?Sized,
+        P: Policy<Observation = Array1<f64>, Action = A> + ?Sized,
     {
         let s = rollout.observation().clone();
         let a = pi.sample_action(&s, rng);
@@ -234,12 +239,14 @@ impl<A: ActionType> TransitionBuffer<A> {
     }
 
     /// Fill the buffer with one complete episode.
-    pub fn fill_episode(
+    pub fn fill_episode<P>(
         &mut self,
         env: &mut dyn Environment<Observation = Array1<f64>, Action = A>,
-        pi: &dyn Policy<Observation = Array1<f64>, Action = A>,
+        pi: &P,
         rng: &mut dyn rand::Rng,
-    ) {
+    ) where
+        P: Policy<Observation = Array1<f64>, Action = A> + ?Sized,
+    {
         let mut rollout = Rollout::new(env, rng);
 
         while !self.fill_one(&mut rollout, pi, rng) {}
@@ -247,14 +254,15 @@ impl<A: ActionType> TransitionBuffer<A> {
 
     /// Fill the buffer with data from stepping the environment n times.
     /// Resets the environment when episodes finish.
-    pub fn fill<E>(
+    pub fn fill<E, P>(
         &mut self,
         rollout: &mut Rollout<'_, E>,
-        pi: &dyn Policy<Observation = Array1<f64>, Action = A>,
+        pi: &P,
         rng: &mut dyn rand::Rng,
         n: usize,
     ) where
         E: Environment<Observation = Array1<f64>, Action = A> + ?Sized,
+        P: Policy<Observation = Array1<f64>, Action = A> + ?Sized,
     {
         for _ in 0..n {
             if self.fill_one(rollout, pi, rng) {
@@ -316,6 +324,64 @@ impl<A: ActionType> TransitionBuffer<A> {
             terminated: Tensor::from_data(TensorData::new(terminated, [size]), &FlexDevice),
         }
     }
+}
+
+fn segment_offsets(
+    starts: Tensor<TrainingBackend, 1, Bool>,
+) -> (
+    Tensor<TrainingBackend, 1, Int>,
+    Tensor<TrainingBackend, 1, Int>,
+) {
+    let size = starts.shape()[0];
+    let indices = Tensor::<TrainingBackend, 1, Int>::arange(0..size as i64, &FlexDevice);
+    let start_indices = indices.clone().mask_fill(starts.bool_not(), 0).cummax(0);
+    let offsets = indices - start_indices.clone();
+    (offsets, start_indices)
+}
+
+/// Compute y_t = x_t + discount * y_{t+1}, resetting at boundaries.
+fn segmented_discounted_cumsum(
+    values: Tensor<TrainingBackend, 1>,
+    boundaries: Tensor<TrainingBackend, 1, Bool>,
+    discount: f64,
+) -> Tensor<TrainingBackend, 1> {
+    if discount == 0.0 {
+        return values;
+    }
+
+    let values = values.flip([0]);
+    let starts = boundaries.flip([0]).slice_assign(
+        0..1,
+        Tensor::<TrainingBackend, 1, Bool>::from_data([true], &FlexDevice),
+    );
+    let (offsets, start_indices) = segment_offsets(starts);
+    let powers = Tensor::<TrainingBackend, 1>::full(values.shape(), discount, &FlexDevice)
+        .powf(offsets.float());
+    let cumulative = (values / powers.clone()).cumsum(0);
+    let before_start = cumulative
+        .clone()
+        .select(0, (start_indices.clone() - 1).clamp_min(0))
+        .mask_fill(start_indices.equal_elem(0), 0.0);
+
+    (powers * (cumulative - before_start)).flip([0])
+}
+
+fn discounts_from_episode_start(
+    boundaries: Tensor<TrainingBackend, 1, Bool>,
+    discount: f64,
+) -> Tensor<TrainingBackend, 1> {
+    let size = boundaries.shape()[0];
+    let starts = Tensor::cat(
+        vec![
+            Tensor::<TrainingBackend, 1, Bool>::from_data([true], &FlexDevice),
+            boundaries,
+        ],
+        0,
+    )
+    .slice(0..size);
+    let (offsets, _) = segment_offsets(starts);
+
+    Tensor::<TrainingBackend, 1>::full([size], discount, &FlexDevice).powf(offsets.float())
 }
 
 #[cfg(test)]
@@ -452,8 +518,9 @@ mod tests {
         let gamma = 0.9;
         let lambda = 0.8;
 
-        let returns = batch
-            .discounted_returns(value, gamma)
+        let returns_t = batch.discounted_returns(value, gamma);
+        let returns = returns_t
+            .clone()
             .into_data()
             .iter::<f64>()
             .collect::<Vec<_>>();
@@ -472,6 +539,19 @@ mod tests {
             2.0 + gamma * 3.0 + gamma.powi(2) * 99.0,
             3.0 + gamma * 99.0,
         ]) {
+            assert!((actual - expected).abs() < 1e-5);
+        }
+
+        let returns_from_episode_start = batch
+            .discount_from_episode_start(returns_t, gamma)
+            .into_data()
+            .iter::<f64>()
+            .collect::<Vec<_>>();
+
+        for (index, (actual, expected)) in
+            returns_from_episode_start.iter().zip(&returns).enumerate()
+        {
+            let expected = expected * gamma.powi((index % 3) as i32);
             assert!((actual - expected).abs() < 1e-5);
         }
 

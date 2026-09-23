@@ -145,12 +145,19 @@ impl<Observation> AbstractReporter<Observation> for Reporter<'_, Observation> {
             step: number,
             metrics: metrics.iter().copied().collect(),
         });
-        if unit == "episode" && std::io::stderr().is_terminal() {
-            let episode_return = metrics.iter().find(|(name, _)| *name == "train/return");
-            if let Some((_, value)) = episode_return {
-                eprint!("\rEpisode {number} return {value:.2}");
+        if std::io::stderr().is_terminal() {
+            let label = match step {
+                Step::Episode(_) => "Episode",
+                Step::Epoch(_) => "Epoch",
+                Step::Iteration(_) => "Iteration",
+            };
+            let training_return = metrics
+                .iter()
+                .find(|(name, _)| matches!(*name, "train/return" | "train/episode_return"));
+            if let Some((_, value)) = training_return {
+                eprint!("\r{label} {number} return {value:.2}");
             } else {
-                eprint!("\rEpisode {number}");
+                eprint!("\r{label} {number}");
             }
         }
     }
