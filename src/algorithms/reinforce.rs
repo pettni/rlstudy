@@ -123,7 +123,8 @@ impl ModelFreeSolver for Reinforce {
             let policy = DeepQPolicy::borrowed(&pi, DeepQPolicyMode::SoftMax);
             let mut rollout = Rollout::new(env, rng);
             for _ in 0..self.config.episode_length {
-                if buffer.fill_one(&mut rollout, &policy, rng) {
+                let transition = buffer.fill_one(&mut rollout, &policy, rng);
+                if transition.terminated || transition.truncated {
                     break;
                 }
             }

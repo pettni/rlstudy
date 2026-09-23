@@ -1,8 +1,9 @@
+use super::{ppo::PpoConfig, vpg::VanillaPolicyGradientConfig};
 use crate::algorithms::{ModelFreeSolver, SolveResult, SolveStatus};
 use crate::environment::{Environment, Rollout, Space};
-use crate::network::mlp::MlpModel;
+use crate::network::mlp::{Activation, MlpModel};
 use crate::policy::dq::{DeepQPolicy, DeepQPolicyMode};
-use crate::reporting::{AbstractReporter, Step};
+use crate::reporting::{AbstractReporter, MetricAverages, Step};
 use crate::schedule::Schedule;
 use crate::transition_buffer::TransitionBuffer;
 use burn::{
@@ -11,62 +12,76 @@ use burn::{
     optim::{Adam, AdamConfig, GradientsParams, Optimizer, adaptor::OptimizerAdaptor},
     tensor::{ElementConversion, activation::log_softmax, backend::Backend},
 };
-use clap::Args;
 use ndarray::Array1;
 use rand::RngExt;
-use serde::{Deserialize, Serialize};
 
 type TrainingBackend = Autodiff<Flex>;
 
-#[derive(Debug, Clone, PartialEq, Args, Deserialize, Serialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct VanillaPolicyGradientConfig {
-    #[arg(long, default_value_t = VanillaPolicyGradientConfig::default().gamma)]
-    pub gamma: f64,
-    #[arg(long, default_value_t = VanillaPolicyGradientConfig::default().lambda)]
-    pub lambda: f64,
-    #[arg(long, default_value = "constant:0.0003")]
-    pub pi_learning_rate: Schedule,
-    #[arg(long, default_value = "constant:0.001")]
-    pub v_learning_rate: Schedule,
-    #[arg(long, default_value_t = VanillaPolicyGradientConfig::default().hidden_dims)]
-    pub hidden_dims: usize,
-    #[arg(long, default_value_t = VanillaPolicyGradientConfig::default().epochs)]
-    pub epochs: usize,
-    #[arg(long, default_value_t = VanillaPolicyGradientConfig::default().steps_per_epoch)]
-    pub steps_per_epoch: usize,
-    #[arg(long, default_value_t = VanillaPolicyGradientConfig::default().value_updates_per_epoch)]
-    pub value_updates_per_epoch: usize,
+#[derive(Debug, Clone, PartialEq)]
+pub(super) enum PolicyObjective {
+    /// Vanilla policy gradient objective
+    ///
+    ///  \log pi(a| s) * A(s, a)
+    Vpg,
+    /// PPO(epsilon) objective
+    ///
+    ///  min ( ( pi(a|s) / pi_k(a|s) ) * A, (1 + sign(A) eps) A )
+    Ppo { epsilon: Schedule },
 }
 
-impl Default for VanillaPolicyGradientConfig {
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct PolicyUpdateStrategy {
+    /// Max update steps per loop
+    pub(super) max_updates_per_epoch: usize,
+    /// KL divergence threshold for early stopping
+    pub(super) kl_limit: Option<f64>,
+}
+
+impl Default for PolicyUpdateStrategy {
     fn default() -> Self {
         Self {
-            gamma: 0.99,
-            lambda: 0.97,
-            pi_learning_rate: Schedule::Constant { value: 0.0003 },
-            v_learning_rate: Schedule::Constant { value: 0.001 },
-            hidden_dims: 64,
-            epochs: 100,
-            steps_per_epoch: 4000,
-            value_updates_per_epoch: 80,
+            max_updates_per_epoch: 1,
+            kl_limit: None,
         }
     }
 }
 
-pub struct VanillaPolicyGradient {
-    config: VanillaPolicyGradientConfig,
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct PolicyGradientConfig {
+    pub(super) objective: PolicyObjective,
+    pub(super) gamma: f64,
+    pub(super) lambda: f64,
+    pub(super) pi_learning_rate: Schedule,
+    pub(super) v_learning_rate: Schedule,
+    pub(super) hidden_dims: Vec<usize>,
+    pub(super) activation: Activation,
+    pub(super) epochs: usize,
+    pub(super) steps_per_epoch: usize,
+    pub(super) policy_update_strategy: PolicyUpdateStrategy,
+    pub(super) value_updates_per_epoch: usize,
 }
 
-impl VanillaPolicyGradient {
-    pub fn new(config: VanillaPolicyGradientConfig) -> Result<Self, String> {
+pub struct PolicyGradient {
+    config: PolicyGradientConfig,
+}
+
+impl PolicyGradient {
+    pub fn vpg(config: VanillaPolicyGradientConfig) -> Result<Self, String> {
+        Self::new(config.into())
+    }
+
+    pub fn ppo(config: PpoConfig) -> Result<Self, String> {
+        Self::new(config.into())
+    }
+
+    fn new(config: PolicyGradientConfig) -> Result<Self, String> {
         if !config.gamma.is_finite() || !(0.0..=1.0).contains(&config.gamma) {
             return Err("gamma must be finite and in [0, 1]".into());
         }
         if !config.lambda.is_finite() || !(0.0..=1.0).contains(&config.lambda) {
             return Err("lambda must be finite and in [0, 1]".into());
         }
-        if config.hidden_dims == 0 {
+        if config.hidden_dims.is_empty() || config.hidden_dims.contains(&0) {
             return Err("hidden dims must be positive".into());
         }
         if config.epochs == 0 || config.steps_per_epoch == 0 || config.value_updates_per_epoch == 0
@@ -75,11 +90,14 @@ impl VanillaPolicyGradient {
                 "epochs, steps_per_epoch, and value_updates_per_epoch must be positive".into(),
             );
         }
+        if config.policy_update_strategy.max_updates_per_epoch == 0 {
+            return Err("policy updates per epoch must be positive".into());
+        }
         Ok(Self { config })
     }
 }
 
-impl ModelFreeSolver for VanillaPolicyGradient {
+impl ModelFreeSolver for PolicyGradient {
     type Observation = Array1<f64>;
 
     fn solve_with_reporter(
@@ -102,8 +120,20 @@ impl ModelFreeSolver for VanillaPolicyGradient {
             AdamConfig::new().init();
         let mut v_optimizer = pi_optimizer.clone();
 
-        let mut pi = MlpModel::new(n_s, self.config.hidden_dims, n_a, &device);
-        let mut v = MlpModel::new(n_s, self.config.hidden_dims, 1, &device);
+        let mut pi = MlpModel::new_with_hidden_layers(
+            n_s,
+            &self.config.hidden_dims,
+            n_a,
+            self.config.activation,
+            &device,
+        );
+        let mut v = MlpModel::new_with_hidden_layers(
+            n_s,
+            &self.config.hidden_dims,
+            1,
+            self.config.activation,
+            &device,
+        );
 
         let mut buffer =
             TransitionBuffer::<usize>::with_capacity(self.config.steps_per_epoch, None);
@@ -140,41 +170,79 @@ impl ModelFreeSolver for VanillaPolicyGradient {
                 .mean()
                 .sqrt();
             let advantage = (advantage.sub(advantage_mean)) / (advantage_std + 1e-7);
-
-            // log probabilities
-            let log_probs_a = log_softmax(pi.forward(batch.s.clone()), 1); // (B, A)
-            let log_probs = log_probs_a
-                .clone()
-                .gather(1, batch.a.reshape([-1, 1]))
-                .squeeze_dim(1); // (B, )
+            let advantage = advantage.detach(); // stop-grad
 
             // policy update
 
-            let pi_loss = (log_probs.clone() * advantage).mean().neg();
+            let mut update_metrics = MetricAverages::new();
+            let mut policy_updates = 0;
+            for update in 0..self.config.policy_update_strategy.max_updates_per_epoch {
+                // current policy log-probs
+                let log_probs = log_softmax(pi.forward(batch.s.clone()), 1)
+                    .gather(1, batch.a.clone().reshape([-1, 1]))
+                    .squeeze_dim(1);
 
-            let pi_grad = GradientsParams::from_grads(pi_loss.backward(), &pi);
-            let pi_grad_norm = pi.gradient_norm(&pi_grad);
-            pi = pi_optimizer.step(pi_learning_rate, pi, pi_grad);
+                let kl_estimate = (batch.log_probs.clone() - log_probs.clone())
+                    .mean()
+                    .into_scalar()
+                    .elem::<f64>();
+
+                // check early stopping
+                if update > 0 {
+                    if let Some(limit) = self.config.policy_update_strategy.kl_limit {
+                        // monte carlo estimate of KL(pi, pi_batch)
+                        if kl_estimate > limit {
+                            break;
+                        }
+                    }
+                }
+
+                let pi_loss = match &self.config.objective {
+                    PolicyObjective::Vpg => (log_probs * advantage.clone()).mean().neg(),
+                    PolicyObjective::Ppo { epsilon } => {
+                        let eps = epsilon.value(epoch);
+                        let ratio = (log_probs.clone() - batch.log_probs.clone()).exp();
+
+                        let objective = ratio * advantage.clone();
+                        let clipped_objective = advantage.clone() + eps * advantage.clone().abs();
+                        let clip_mask = clipped_objective.clone().lower(objective.clone());
+
+                        update_metrics.record("pi/kl", kl_estimate);
+                        update_metrics.record(
+                            "pi/clip_fraction",
+                            clip_mask.clone().float().mean().into_scalar().elem::<f64>(),
+                        );
+
+                        objective
+                            .mask_where(clip_mask, clipped_objective)
+                            .mean()
+                            .neg()
+                    }
+                };
+
+                let pi_grad = GradientsParams::from_grads(pi_loss.backward(), &pi);
+                update_metrics.record("pi/loss", pi_loss.into_scalar().elem::<f64>());
+                update_metrics.record("pi/grad_norm", pi.gradient_norm(&pi_grad));
+                pi = pi_optimizer.step(pi_learning_rate, pi, pi_grad);
+                policy_updates += 1;
+            }
+            update_metrics.record("pi/updates", policy_updates as f64);
 
             // critic update
-            let mut v_grad_norm = 0.0;
-            let mut v_loss_mean = 0.0;
             for _ in 0..self.config.value_updates_per_epoch {
                 let v_loss = (returns.clone() - v.forward(batch.s.clone()).squeeze_dim(1))
                     .square()
                     .mean();
 
                 let v_grad = GradientsParams::from_grads(v_loss.backward(), &v);
-                v_grad_norm += v.gradient_norm(&v_grad);
-                v_loss_mean += v_loss.into_scalar().elem::<f64>();
+                update_metrics.record("v/loss", v_loss.into_scalar().elem::<f64>());
+                update_metrics.record("v/grad_norm", v.gradient_norm(&v_grad));
                 v = v_optimizer.step(v_learning_rate, v, v_grad);
             }
-            v_grad_norm /= self.config.value_updates_per_epoch as f64;
-            v_loss_mean /= self.config.value_updates_per_epoch as f64;
 
+            let log_probs_a = log_softmax(pi.forward(batch.s), 1);
             let mut metrics = vec![
                 ("pi/lr", pi_learning_rate),
-                ("pi/grad_norm", pi_grad_norm),
                 (
                     "pi/entropy",
                     (log_probs_a.clone().exp() * log_probs_a.clone())
@@ -185,9 +253,8 @@ impl ModelFreeSolver for VanillaPolicyGradient {
                         .elem::<f64>(),
                 ),
                 ("v/lr", v_learning_rate),
-                ("v/loss", v_loss_mean),
-                ("v/grad_norm", v_grad_norm),
             ];
+            metrics.extend(update_metrics.finish());
             if let Some(stats) = buffer.episode_stats() {
                 metrics.push(("train/episode_return", stats.return_mean));
                 metrics.push(("train/episode_length", stats.length_mean));

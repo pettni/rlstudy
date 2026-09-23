@@ -30,7 +30,7 @@ Develop a solid working understanding of the RL options for improving pretrained
 
 ## Current status
 
-As of 2026-09-20:
+As of 2026-09-23:
 
 - [x] Started reading Zhao end-to-end.
 - [x] Ordered Zhao and Sutton & Barto.
@@ -50,8 +50,12 @@ As of 2026-09-20:
 - [x] Implemented REINFORCE and a learned state-value baseline in the `Reinforce` solver.
 - [x] Compared Monte Carlo and one-step TD actor/critic targets on CartPole.
 - [x] Implemented online one-step actor–critic with per-transition updates; CartPole performance remains unresolved.
+- [x] Implemented episodic semi-gradient n-step Sarsa with neural Q-function approximation.
+- [x] Implemented VPG with generalized advantage estimation and bootstrapped value targets.
+- [x] Standardized DQN, REINFORCE, and VPG transition storage around a shared transition buffer.
+- [x] Wrote an algorithm taxonomy covering policy relation, targets, policy signals, data usage, and bias–variance tradeoffs.
 
-The Chapter 8 DQN and Chapter 9 REINFORCE with baseline implementation checkpoints are complete. Online one-step actor–critic is implemented, but has not learned reliably on CartPole. Next, implement episodic semi-gradient n-step Sarsa as a separate neural value-based solver.
+The Zhao implementation checkpoints, including neural n-step Sarsa, are complete. VPG with GAE solves CartPole, providing the bridge into Spinning Up. Online one-step actor–critic remains unreliable on CartPole. Next, work through PPO and implement it on a small continuous-control environment.
 
 ## Project
 
@@ -99,7 +103,8 @@ Read all ten chapters in order. Pair each major concept with a bounded teaching 
 - [x] **Chapter 8:** personally implement a minimal Burn DQN on CartPole, using the prototype only as a reference after making an independent attempt.
 - [x] **Chapter 9:** REINFORCE, then add a learned baseline.
 - [x] **Chapter 10:** implement and test online one-step actor–critic with per-transition updates.
-- [ ] **Sutton and Barto §10.2:** implement episodic semi-gradient n-step Sarsa separately from DQN; compare their targets and CartPole learning curves.
+- [x] **Sutton and Barto §10.2:** implement episodic semi-gradient n-step Sarsa separately from DQN.
+- [ ] Compare one-step and n-step approximate TD learning behavior across several seeds.
 
 Reuse Grid World through the tabular methods and compare learned values or policies with the dynamic-programming solution. Use one small benchmark for the deep methods so network and optimizer behavior can be studied without robotics complexity.
 
@@ -134,8 +139,9 @@ Start this phase after Zhao Chapter 10. Use [OpenAI Spinning Up](https://spinnin
 
 - [x] Read the Spinning Up introduction and key concepts.
 - [x] Read Sutton and Barto §§12.1–12.3 on λ-returns before studying PPO and generalized advantage estimation.
-- [ ] Work through the VPG, PPO, TD3, and SAC explanations.
-- [ ] Compare the Zhao Rust/Burn REINFORCE and actor–critic implementations with Spinning Up's VPG formulation.
+- [x] Work through the VPG explanation and implement it in Rust/Burn.
+- [ ] Work through the PPO, TD3, and SAC explanations.
+- [x] Compare the Zhao Rust/Burn REINFORCE and actor–critic implementations with Spinning Up's VPG formulation.
 - [ ] Personally implement PPO with generalized advantage estimation on one small continuous-control environment.
 - [ ] Implement a squashed Gaussian actor, replay buffer, twin critics, target networks, and entropy-temperature update for SAC in Rust/Burn.
 - [ ] Train SAC on a simple Gymnasium continuous-control environment through a small PyO3 bridge.
@@ -250,3 +256,6 @@ Use these in the roles below, not as a parallel reading backlog.
 | 2026-09-19 | Accepted DQN as the Chapter 8 implementation checkpoint | Linear approximation is understood; a separate implementation would add little toward the project goal | Establish REINFORCE learning behavior, add a learned baseline, then implement one-step actor–critic |
 | 2026-09-20 | Implemented REINFORCE and a learned baseline in Rust/Burn | The solver now supports Monte Carlo and one-step TD actor/critic targets and reports training and evaluation metrics | Compare update strategies on CartPole |
 | 2026-09-20 | Ablated CartPole policy-gradient settings | Monte Carlo actor and baseline reached a 496.5 mean sampled evaluation return across 10 seeds with the learning rate reduced after episode 250; episode-batch TD actor updates remained weak | Test online TD(0) updates after each transition |
+| 2026-09-20 | Implemented approximate TD(n) | Added episodic semi-gradient n-step Sarsa with a neural Q function and a MountainCar configuration | Continue into practical policy-gradient methods |
+| 2026-09-23 | Implemented VPG in Rust/Burn | Added trajectory batches, GAE, bootstrapped value targets, and CartPole settings that reached a 494.7 mean evaluation return with seed 42 | Work through PPO and continuous policies |
+| 2026-09-23 | Standardized transition storage and documented the algorithm taxonomy | DQN, REINFORCE, and VPG now reuse the transition buffer; `TAXONOMY.md` records the main dimensions distinguishing the implemented algorithms | Implement PPO on a small continuous-control environment |

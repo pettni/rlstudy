@@ -6,6 +6,30 @@ use rand::{SeedableRng, rngs::StdRng};
 use serde::Serialize;
 use std::{collections::BTreeMap, io::IsTerminal};
 
+#[derive(Default)]
+pub struct MetricAverages {
+    values: BTreeMap<&'static str, (f64, usize)>,
+}
+
+impl MetricAverages {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn record(&mut self, name: &'static str, value: f64) {
+        let (sum, count) = self.values.entry(name).or_default();
+        *sum += value;
+        *count += 1;
+    }
+
+    pub fn finish(self) -> Vec<(&'static str, f64)> {
+        self.values
+            .into_iter()
+            .map(|(name, (sum, count))| (name, sum / count as f64))
+            .collect()
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Step {
     Episode(usize),

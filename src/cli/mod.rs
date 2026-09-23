@@ -248,7 +248,7 @@ fn run_solver(
             };
             Ok((SelectedResult::Neural(result, history), stats))
         }
-        SelectedSolver::Vpg(solver) => {
+        SelectedSolver::Vpg(solver) | SelectedSolver::Ppo(solver) => {
             let (result, history, stats) = match system {
                 SelectedSystem::Model(model) => {
                     let mut environment = FeatureEnvironment::new(model)?;
@@ -445,8 +445,8 @@ struct VisualizationResult<'a> {
 mod tests {
     use super::*;
     use rlstudy::algorithms::{
-        ActorCriticConfig, ApproximateTDConfig, DqnConfig, MonteCarloConfig, ReinforceConfig,
-        TDConfig, ValueIterationConfig, VanillaPolicyGradientConfig,
+        ActorCriticConfig, ApproximateTDConfig, DqnConfig, MonteCarloConfig, PpoConfig,
+        ReinforceConfig, TDConfig, ValueIterationConfig, VanillaPolicyGradientConfig,
     };
 
     fn solver(arguments: &[&str]) -> Solver {
@@ -496,6 +496,10 @@ mod tests {
             config,
             yaml_serde::from_str::<VanillaPolicyGradientConfig>("{}").unwrap()
         );
+        let Solver::Ppo(config) = solver(&["solve", "ppo"]) else {
+            unreachable!()
+        };
+        assert_eq!(config, yaml_serde::from_str::<PpoConfig>("{}").unwrap());
         let Solver::ActorCritic(config) = solver(&["solve", "actor-critic"]) else {
             unreachable!()
         };

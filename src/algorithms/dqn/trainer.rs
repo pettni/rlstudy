@@ -92,8 +92,11 @@ impl DqnTrainer {
         self.target = self.target.clone().soft_update(&self.online, rate);
     }
 
-    pub(super) fn policy_view(&self) -> DeepQPolicy<TrainingBackend, &MlpModel<TrainingBackend>> {
-        DeepQPolicy::borrowed(&self.online, DeepQPolicyMode::Greedy)
+    pub(super) fn policy_view(
+        &self,
+        mode: DeepQPolicyMode,
+    ) -> DeepQPolicy<TrainingBackend, &MlpModel<TrainingBackend>> {
+        DeepQPolicy::borrowed(&self.online, mode)
     }
 
     pub(super) fn inference_model(&self) -> MlpModel<Flex> {

@@ -48,6 +48,8 @@ pub struct TransitionBufferTensorData<A: ActionType> {
     pub s: Tensor<TrainingBackend, 2>,
     // [a0, ..., a_{T-1}]
     pub a: A::TensorType,
+    // [log pi(a0|s0), ..., log(a_{T-1} | s_{T-1})}]
+    pub log_probs: Tensor<TrainingBackend, 1>,
     // [r1, ..., r_T]
     pub r: Tensor<TrainingBackend, 1>,
     // [s1, ..., s_T]
@@ -124,6 +126,7 @@ impl<A: ActionType> TransitionBufferTensorData<A> {
 pub struct Transition<A: ActionType> {
     pub s: ndarray::Array1<f64>,
     pub a: A,
+    pub log_pi_a_s: f64,
     pub r: f64,
     pub sp: ndarray::Array1<f64>,
     pub terminated: bool,
@@ -210,32 +213,32 @@ impl<A: ActionType> TransitionBuffer<A> {
         self.transitions.push_back(transition);
     }
 
-    /// Take one environment step and add its transition to the buffer.
+    /// Take one environment step and return the transition added to the buffer.
     pub fn fill_one<E, P>(
         &mut self,
         rollout: &mut Rollout<'_, E>,
         pi: &P,
         rng: &mut dyn rand::Rng,
-    ) -> bool
+    ) -> &Transition<A>
     where
         E: Environment<Observation = Array1<f64>, Action = A> + ?Sized,
         P: Policy<Observation = Array1<f64>, Action = A> + ?Sized,
     {
         let s = rollout.observation().clone();
-        let a = pi.sample_action(&s, rng);
-        let step = rollout.step(a.clone(), rng);
-        let done = step.terminated || step.truncated;
+        let action_sample = pi.sample_action_with_log_prob(&s, rng);
+        let step = rollout.step(action_sample.action.clone(), rng);
 
         self.push(Transition {
             s,
-            a,
+            a: action_sample.action,
+            log_pi_a_s: action_sample.log_prob,
             r: step.reward,
             sp: step.observation,
             terminated: step.terminated,
             truncated: step.truncated,
         });
 
-        done
+        self.transitions.back().expect("transition was just added")
     }
 
     /// Fill the buffer with one complete episode.
@@ -249,7 +252,12 @@ impl<A: ActionType> TransitionBuffer<A> {
     {
         let mut rollout = Rollout::new(env, rng);
 
-        while !self.fill_one(&mut rollout, pi, rng) {}
+        loop {
+            let transition = self.fill_one(&mut rollout, pi, rng);
+            if transition.terminated || transition.truncated {
+                break;
+            }
+        }
     }
 
     /// Fill the buffer with data from stepping the environment n times.
@@ -265,7 +273,8 @@ impl<A: ActionType> TransitionBuffer<A> {
         P: Policy<Observation = Array1<f64>, Action = A> + ?Sized,
     {
         for _ in 0..n {
-            if self.fill_one(rollout, pi, rng) {
+            let transition = self.fill_one(rollout, pi, rng);
+            if transition.terminated || transition.truncated {
                 rollout.reset(rng);
             }
         }
@@ -301,6 +310,7 @@ impl<A: ActionType> TransitionBuffer<A> {
 
         let mut states = Vec::with_capacity(size * state_dim);
         let mut actions = Vec::with_capacity(size);
+        let mut log_probs = Vec::with_capacity(size);
         let mut rewards = Vec::with_capacity(size);
         let mut next_states = Vec::with_capacity(size * state_dim);
         let mut terminated = Vec::with_capacity(size);
@@ -309,6 +319,7 @@ impl<A: ActionType> TransitionBuffer<A> {
         for transition in transitions {
             states.extend(transition.s.iter().copied());
             actions.push(&transition.a);
+            log_probs.push(transition.log_pi_a_s);
             rewards.push(transition.r);
             next_states.extend(transition.sp.iter().copied());
             terminated.push(transition.terminated);
@@ -318,6 +329,7 @@ impl<A: ActionType> TransitionBuffer<A> {
         TransitionBufferTensorData::<A> {
             s: Tensor::from_data(TensorData::new(states, [size, state_dim]), &FlexDevice),
             a: A::tensor_data(&actions),
+            log_probs: Tensor::from_data(TensorData::new(log_probs, [size]), &FlexDevice),
             r: Tensor::from_data(TensorData::new(rewards, [size]), &FlexDevice),
             sp: Tensor::from_data(TensorData::new(next_states, [size, state_dim]), &FlexDevice),
             truncated: Tensor::from_data(TensorData::new(truncated, [size]), &FlexDevice),
@@ -388,6 +400,7 @@ fn discounts_from_episode_start(
 mod tests {
     use super::*;
     use crate::environment::{Space, Step};
+    use crate::policy::PolicySample;
     use rand::{SeedableRng, rngs::StdRng};
 
     struct TwoStepEnvironment {
@@ -429,8 +442,15 @@ mod tests {
         type Observation = Array1<f64>;
         type Action = usize;
 
-        fn sample_action(&self, _observation: &Array1<f64>, _rng: &mut dyn rand::Rng) -> usize {
-            0
+        fn sample_action_with_log_prob(
+            &self,
+            _observation: &Array1<f64>,
+            _rng: &mut dyn rand::Rng,
+        ) -> PolicySample<usize> {
+            PolicySample {
+                action: 0,
+                log_prob: 0.0,
+            }
         }
     }
 
@@ -438,6 +458,7 @@ mod tests {
         Transition {
             s: Array1::zeros(1),
             a: 0,
+            log_pi_a_s: 0.0,
             r: reward,
             sp: Array1::zeros(1),
             terminated: false,
@@ -455,6 +476,7 @@ mod tests {
         Transition {
             s: Array1::from_vec(vec![state_value]),
             a: 0,
+            log_pi_a_s: 0.0,
             r: reward,
             sp: Array1::from_vec(vec![next_state_value]),
             terminated,

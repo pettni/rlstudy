@@ -6,6 +6,13 @@ pub mod uniform;
 
 pub use tabular::{PolicyObjective, TabularPolicy};
 
+pub struct PolicySample<A> {
+    /// Sampled action
+    pub action: A,
+    /// Log probability log pi(a|s) of sampled action
+    pub log_prob: f64,
+}
+
 /// A policy maps observations to actions.
 pub trait Policy {
     type Observation;
@@ -15,7 +22,15 @@ pub trait Policy {
         &self,
         observation: &Self::Observation,
         rng: &mut dyn rand::Rng,
-    ) -> Self::Action;
+    ) -> Self::Action {
+        self.sample_action_with_log_prob(observation, rng).action
+    }
+
+    fn sample_action_with_log_prob(
+        &self,
+        observation: &Self::Observation,
+        rng: &mut dyn rand::Rng,
+    ) -> PolicySample<Self::Action>;
 }
 
 pub trait DiscretePolicy {
@@ -60,7 +75,11 @@ where
     type Observation = T::Observation;
     type Action = usize;
 
-    fn sample_action(&self, observation: &Self::Observation, rng: &mut dyn rand::Rng) -> usize {
+    fn sample_action_with_log_prob(
+        &self,
+        observation: &Self::Observation,
+        rng: &mut dyn rand::Rng,
+    ) -> PolicySample<usize> {
         use rand::RngExt;
 
         let probabilities = &self.action_probabilities(observation);
@@ -70,9 +89,15 @@ where
         for (action, probability) in probabilities.iter().enumerate() {
             cumulative += probability;
             if sample < cumulative {
-                return action;
+                return PolicySample {
+                    action,
+                    log_prob: probability.ln(),
+                };
             }
         }
-        probabilities.len() - 1
+        PolicySample {
+            action: probabilities.len() - 1,
+            log_prob: probabilities.last().expect("probabilities not empty").ln(),
+        }
     }
 }

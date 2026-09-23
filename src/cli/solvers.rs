@@ -1,9 +1,9 @@
 use clap::Subcommand;
 use rlstudy::algorithms::{
     ActorCritic, ActorCriticConfig, ApproximateTD, ApproximateTDConfig, DeepQLearning, DqnArgs,
-    MonteCarlo, MonteCarloConfig, PolicyIterationConfig, Reinforce, ReinforceConfig, TD, TDConfig,
-    TruncatedPolicyIteration, TruncatedPolicyIterationConfig, ValueIterationConfig,
-    VanillaPolicyGradient, VanillaPolicyGradientConfig,
+    MonteCarlo, MonteCarloConfig, PolicyGradient, PolicyIterationConfig, PpoConfig, Reinforce,
+    ReinforceConfig, TD, TDConfig, TruncatedPolicyIteration, TruncatedPolicyIterationConfig,
+    ValueIterationConfig, VanillaPolicyGradientConfig,
 };
 use serde::{Serialize, de::DeserializeOwned};
 use std::{fs, path::Path};
@@ -18,6 +18,7 @@ pub(super) enum Solver {
     Dqn(DqnArgs),
     Reinforce(ReinforceConfig),
     Vpg(VanillaPolicyGradientConfig),
+    Ppo(PpoConfig),
     ActorCritic(ActorCriticConfig),
     ApproximateTD(ApproximateTDConfig),
 }
@@ -33,6 +34,7 @@ impl Solver {
             Self::Dqn(_) => "dqn",
             Self::Reinforce(_) => "reinforce",
             Self::Vpg(_) => "vpg",
+            Self::Ppo(_) => "ppo",
             Self::ActorCritic(_) => "actor-critic",
             Self::ApproximateTD(_) => "approximate-td",
         }
@@ -45,7 +47,8 @@ pub(super) enum SelectedSolver {
     TD(TD),
     Dqn(DeepQLearning),
     Reinforce(Reinforce),
-    Vpg(VanillaPolicyGradient),
+    Vpg(PolicyGradient),
+    Ppo(PolicyGradient),
     ActorCritic(ActorCritic),
     ApproximateTD(ApproximateTD),
 }
@@ -105,7 +108,14 @@ pub(super) fn build_solver(
         Solver::Vpg(config) => {
             let (config, parameters) = resolve_config(config, config_path)?;
             Ok((
-                SelectedSolver::Vpg(VanillaPolicyGradient::new(config)?),
+                SelectedSolver::Vpg(PolicyGradient::vpg(config)?),
+                parameters,
+            ))
+        }
+        Solver::Ppo(config) => {
+            let (config, parameters) = resolve_config(config, config_path)?;
+            Ok((
+                SelectedSolver::Ppo(PolicyGradient::ppo(config)?),
                 parameters,
             ))
         }
@@ -156,7 +166,7 @@ where
 #[cfg(test)]
 mod tests {
     use rlstudy::algorithms::{
-        ActorCriticConfig, ApproximateTDConfig, DqnConfig, ReinforceConfig,
+        ActorCriticConfig, ApproximateTDConfig, DqnConfig, PpoConfig, ReinforceConfig,
         VanillaPolicyGradientConfig,
     };
 
@@ -208,7 +218,14 @@ mod tests {
         let config: VanillaPolicyGradientConfig =
             yaml_serde::from_str(include_str!("../../settings/vpg_for_cartpole.yaml")).unwrap();
 
-        assert!(rlstudy::algorithms::VanillaPolicyGradient::new(config).is_ok());
+        assert!(rlstudy::algorithms::PolicyGradient::vpg(config).is_ok());
+    }
+
+    #[test]
+    fn checked_in_ppo_config_parses() {
+        let config: PpoConfig =
+            yaml_serde::from_str(include_str!("../../settings/ppo_for_cartpole.yaml")).unwrap();
+        assert!(rlstudy::algorithms::PolicyGradient::ppo(config).is_ok());
     }
 
     #[test]

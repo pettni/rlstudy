@@ -7,22 +7,22 @@ pub mod actor_critic;
 pub mod approximate_td;
 pub mod dqn;
 pub mod monte_carlo;
+pub mod policy_gradient;
 pub mod policy_iteration;
 pub mod reinforce;
 pub mod td;
-pub mod vpg;
 
 pub use actor_critic::{ActorCritic, ActorCriticConfig};
 pub use approximate_td::{ApproximateTD, ApproximateTDConfig};
 pub use dqn::{DeepQLearning, DqnArgs, DqnConfig, DqnMode, Loss, Schedule, TargetUpdateConfig};
 pub use monte_carlo::{MonteCarlo, MonteCarloConfig};
+pub use policy_gradient::{PolicyGradient, PpoConfig, VanillaPolicyGradientConfig};
 pub use policy_iteration::{
     PolicyIterationConfig, StoppingCriterion, TruncatedPolicyIteration,
     TruncatedPolicyIterationConfig, ValueIterationConfig,
 };
 pub use reinforce::{Reinforce, ReinforceConfig};
 pub use td::{TD, TDConfig, TDVariant};
-pub use vpg::{VanillaPolicyGradient, VanillaPolicyGradientConfig};
 
 pub trait ModelBasedSolver {
     type Observation;

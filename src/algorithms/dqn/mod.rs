@@ -11,7 +11,7 @@ use crate::policy::{
 };
 use crate::reporting::{AbstractReporter, Step};
 pub use crate::schedule::Schedule;
-use crate::transition_buffer::{Transition, TransitionBuffer};
+use crate::transition_buffer::TransitionBuffer;
 use clap::{Args, ValueEnum};
 use ndarray::Array1;
 use rand::RngExt;
@@ -217,24 +217,11 @@ impl ModelFreeSolver for DeepQLearning {
 
             for step_index in 0.. {
                 let epsilon = self.config.epsilon_schedule.value(iter);
-                let a = trainer.policy_view().epsilon_greedy_action(
-                    rollout.observation(),
-                    epsilon,
-                    rng,
-                );
-                let s = rollout.observation().clone();
-                let step = rollout.step(a, rng);
-                episode_return += step.reward;
+                let behavior_policy = trainer.policy_view(DeepQPolicyMode::SoftGreedy { epsilon });
+                let transition = buffer.fill_one(&mut rollout, &behavior_policy, rng);
+                episode_return += transition.r;
                 episode_length = step_index + 1;
-
-                buffer.push(Transition {
-                    s,
-                    a,
-                    r: step.reward,
-                    sp: step.observation,
-                    terminated: step.terminated,
-                    truncated: step.truncated,
-                });
+                let done = transition.terminated || transition.truncated;
 
                 let batch = buffer.random_batch_tensor_data(self.config.batch_size, rng);
                 let (new_trainer, loss, gradient_norm) =
@@ -254,8 +241,7 @@ impl ModelFreeSolver for DeepQLearning {
                 iter += 1;
                 episode_loss += loss;
                 episode_gradient_norm += gradient_norm;
-                if step.terminated
-                    || step.truncated
+                if done
                     || self
                         .config
                         .episode_length
