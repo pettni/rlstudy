@@ -19,7 +19,7 @@ Load the selected solver's settings from YAML with the solve-level `--config`
 option. Set reporting frequency and evaluation size with solve-level options:
 
 ```bash
-cargo run -r -- solve --grid-world grid_worlds/zhao_5x5.yaml --config settings/dqn_for_5x5.yaml --evaluation-frequency episode:50 --evaluation-episodes 10 --evaluation-max-steps 100 dqn
+cargo run -r -- solve --grid-world grid_worlds/zhao_5x5.yaml --config settings/dqn_for_5x5.yaml --evaluation-frequency 50 --evaluation-episodes 10 --evaluation-max-steps 100 dqn
 ```
 
 Run DQN on Gymnasium through the Python environment managed by `uv`:
@@ -31,7 +31,7 @@ uv run cargo run -r -- solve --gym CartPole-v1 dqn
 Run four-step SARSA on MountainCar:
 
 ```bash
-uv run cargo run -r -- solve --gym MountainCar-v0 --normalize-observations --gym-max-steps 1000 --config settings/approximate_td_for_mountain_car.yaml --evaluation-frequency episode:100 --evaluation-episodes 100 --evaluation-max-steps 200 approximate-td
+uv run cargo run -r -- solve --gym MountainCar-v0 --normalize-observations --gym-max-steps 1000 --config settings/approximate_td_for_mountain_car.yaml --evaluation-frequency 100 --evaluation-episodes 100 --evaluation-max-steps 200 approximate-td
 ```
 
 Training allows 1,000 steps so the agent can discover the goal; evaluation is
@@ -50,15 +50,15 @@ Grid world solutions also support `scripts/plot_grid_world.py` to visualize the 
 
 DQN on 5x5 grid:
 ```bash
-cargo run -r -- solve --evaluation-frequency episode:10 --json --grid-world grid_worlds/zhao_5x5.yaml --config settings/dqn_for_5x5.yaml dqn | uv run scripts/plot_solver.py | icat
+cargo run -r -- solve --evaluation-frequency 10 --json --grid-world grid_worlds/zhao_5x5.yaml --config settings/dqn_for_5x5.yaml dqn | uv run scripts/plot_solver.py | icat
 ```
 
 DQN on CartPole:
 ```bash
-uv run cargo run -r -- solve --evaluation-frequency episode:10 --evaluation-max-steps 500 --json --gym CartPole-v1 --config settings/dqn_for_cartpole.yaml dqn| uv run scripts/plot_solver.py | icat
+uv run cargo run -r -- solve --evaluation-frequency 10 --evaluation-max-steps 500 --json --gym CartPole-v1 --config settings/dqn_for_cartpole.yaml dqn| uv run scripts/plot_solver.py | icat
 ```
 
 REINFORCE on CartPole:
 ```bash
-uv run cargo run -r -- solve --evaluation-frequency episode:10 --evaluation-max-steps 500 --json --gym CartPole-v1 --config settings/reinforce_for_cartpole.yaml policy-gradient | uv run scripts/plot_solver.py | icat
+uv run cargo run -r -- solve --evaluation-frequency 10 --evaluation-max-steps 500 --json --gym CartPole-v1 --config settings/reinforce_for_cartpole.yaml policy-gradient | uv run scripts/plot_solver.py | icat
 ```

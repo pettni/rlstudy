@@ -10,6 +10,7 @@ pub mod monte_carlo;
 pub mod policy_iteration;
 pub mod reinforce;
 pub mod td;
+pub mod vpg;
 
 pub use actor_critic::{ActorCritic, ActorCriticConfig};
 pub use approximate_td::{ApproximateTD, ApproximateTDConfig};
@@ -21,6 +22,7 @@ pub use policy_iteration::{
 };
 pub use reinforce::{Reinforce, ReinforceConfig};
 pub use td::{TD, TDConfig, TDVariant};
+pub use vpg::{VanillaPolicyGradient, VanillaPolicyGradientConfig};
 
 pub trait ModelBasedSolver {
     type Observation;

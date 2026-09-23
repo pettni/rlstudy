@@ -11,7 +11,7 @@ use rlstudy::environment::{Environment, FeatureEnvironment, TabularEnvironment};
 use rlstudy::environments::{GymEnvironment, GymOptions};
 use rlstudy::evaluation::{EvaluationStats, fixed_policy_values};
 use rlstudy::model::TabularModel;
-use rlstudy::reporting::{Frequency, HistoryRow, Reporter, ReporterConfig};
+use rlstudy::reporting::{HistoryRow, Reporter, ReporterConfig};
 use serde::Serialize;
 use std::path::PathBuf;
 
@@ -74,7 +74,6 @@ fn solve(args: &SolveArgs) -> Result<(), Box<dyn std::error::Error>> {
         &gym_options,
     )?;
     let (solver, parameters) = build_solver(&args.solver, args.config.as_deref())?;
-    validate_frequency(&solver, args.reporting.evaluation_frequency)?;
     let mut rng = StdRng::seed_from_u64(args.seed);
     let (result, final_evaluation) = run_solver(
         solver,
@@ -130,21 +129,6 @@ fn solve(args: &SolveArgs) -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     Ok(())
-}
-
-fn validate_frequency(solver: &SelectedSolver, frequency: Option<Frequency>) -> Result<(), String> {
-    match (solver, frequency) {
-        (SelectedSolver::ModelBased(_), Some(Frequency::PerEpisode(_))) => {
-            Err("model-based solvers support iteration evaluation frequency".into())
-        }
-        (
-            SelectedSolver::MonteCarlo(_)
-            | SelectedSolver::TD(_)
-            | SelectedSolver::ApproximateTD(_),
-            Some(Frequency::PerIteration(_)),
-        ) => Err("solver supports episode evaluation frequency".into()),
-        _ => Ok(()),
-    }
 }
 
 fn run_solver(
@@ -236,6 +220,35 @@ fn run_solver(
             Ok((SelectedResult::Neural(result, history), stats))
         }
         SelectedSolver::Reinforce(solver) => {
+            let (result, history, stats) = match system {
+                SelectedSystem::Model(model) => {
+                    let mut environment = FeatureEnvironment::new(model)?;
+                    let mut evaluation_environment = FeatureEnvironment::new(model)?;
+                    run_model_free(
+                        &solver,
+                        &mut environment,
+                        &mut evaluation_environment,
+                        rng,
+                        reporting,
+                        evaluation_seed,
+                    )?
+                }
+                SelectedSystem::Gym(environment) => {
+                    let mut evaluation_environment =
+                        GymEnvironment::new(gym_id.expect("Gym ID is present"), gym_options)?;
+                    run_model_free(
+                        &solver,
+                        environment,
+                        &mut evaluation_environment,
+                        rng,
+                        reporting,
+                        evaluation_seed,
+                    )?
+                }
+            };
+            Ok((SelectedResult::Neural(result, history), stats))
+        }
+        SelectedSolver::Vpg(solver) => {
             let (result, history, stats) = match system {
                 SelectedSystem::Model(model) => {
                     let mut environment = FeatureEnvironment::new(model)?;
@@ -433,7 +446,7 @@ mod tests {
     use super::*;
     use rlstudy::algorithms::{
         ActorCriticConfig, ApproximateTDConfig, DqnConfig, MonteCarloConfig, ReinforceConfig,
-        TDConfig, ValueIterationConfig,
+        TDConfig, ValueIterationConfig, VanillaPolicyGradientConfig,
     };
 
     fn solver(arguments: &[&str]) -> Solver {
@@ -476,6 +489,13 @@ mod tests {
             config,
             yaml_serde::from_str::<ReinforceConfig>("{}").unwrap()
         );
+        let Solver::Vpg(config) = solver(&["solve", "vpg"]) else {
+            unreachable!()
+        };
+        assert_eq!(
+            config,
+            yaml_serde::from_str::<VanillaPolicyGradientConfig>("{}").unwrap()
+        );
         let Solver::ActorCritic(config) = solver(&["solve", "actor-critic"]) else {
             unreachable!()
         };
@@ -498,7 +518,7 @@ mod tests {
             "rlstudy",
             "solve",
             "--evaluation-frequency",
-            "episode:7",
+            "7",
             "--evaluation-episodes",
             "3",
             "--evaluation-max-steps",
@@ -509,18 +529,9 @@ mod tests {
         ])
         .unwrap()
         .command;
-        assert_eq!(
-            args.reporting.evaluation_frequency,
-            Some(Frequency::PerEpisode(7))
-        );
+        assert_eq!(args.reporting.evaluation_frequency, Some(7));
         assert_eq!(args.reporting.evaluation_episodes, 3);
         assert_eq!(args.reporting.evaluation_max_steps, 20);
         assert_eq!(args.value_gamma, 0.5);
-    }
-
-    #[test]
-    fn unsupported_frequency_is_rejected_before_training() {
-        let (solver, _) = build_solver(&Solver::VI(ValueIterationConfig::default()), None).unwrap();
-        assert!(validate_frequency(&solver, Some(Frequency::PerEpisode(1))).is_err());
     }
 }

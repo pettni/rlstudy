@@ -4,11 +4,12 @@ use crate::policy::DiscretePolicy;
 use clap::Args;
 use rand::{SeedableRng, rngs::StdRng};
 use serde::Serialize;
-use std::{collections::BTreeMap, io::IsTerminal, str::FromStr};
+use std::{collections::BTreeMap, io::IsTerminal};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Step {
     Episode(usize),
+    Epoch(usize),
     Iteration(usize),
 }
 
@@ -16,59 +17,8 @@ impl Step {
     fn parts(self) -> (&'static str, usize) {
         match self {
             Self::Episode(number) => ("episode", number),
+            Self::Epoch(number) => ("epoch", number),
             Self::Iteration(number) => ("iteration", number),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Frequency {
-    PerEpisode(usize),
-    PerIteration(usize),
-}
-
-impl Serialize for Frequency {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_str(&self.to_string())
-    }
-}
-
-impl Frequency {
-    pub fn matches(self, step: Step) -> bool {
-        match (self, step) {
-            (Self::PerEpisode(interval), Step::Episode(number))
-            | (Self::PerIteration(interval), Step::Iteration(number)) => number % interval == 0,
-            _ => false,
-        }
-    }
-}
-
-impl FromStr for Frequency {
-    type Err = String;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        let (unit, count) = value
-            .split_once(':')
-            .ok_or("expected episode:N or iteration:N")?;
-        let count = count
-            .parse::<usize>()
-            .map_err(|_| "expected a positive interval")?;
-        if count == 0 {
-            return Err("interval must be positive".into());
-        }
-        match unit {
-            "episode" => Ok(Self::PerEpisode(count)),
-            "iteration" => Ok(Self::PerIteration(count)),
-            _ => Err("expected episode:N or iteration:N".into()),
-        }
-    }
-}
-
-impl std::fmt::Display for Frequency {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::PerEpisode(count) => write!(f, "episode:{count}"),
-            Self::PerIteration(count) => write!(f, "iteration:{count}"),
         }
     }
 }
@@ -76,7 +26,7 @@ impl std::fmt::Display for Frequency {
 #[derive(Debug, Clone, PartialEq, Args, Serialize)]
 pub struct ReporterConfig {
     #[arg(long)]
-    pub evaluation_frequency: Option<Frequency>,
+    pub evaluation_frequency: Option<usize>,
     #[arg(long, default_value_t = 10)]
     pub evaluation_episodes: usize,
     #[arg(long, default_value_t = 100)]
@@ -96,10 +46,7 @@ impl Default for ReporterConfig {
 impl ReporterConfig {
     pub fn validate(&self) -> Result<(), String> {
         EvaluationConfig::new(self.evaluation_episodes, self.evaluation_max_steps)?;
-        if matches!(
-            self.evaluation_frequency,
-            Some(Frequency::PerEpisode(0) | Frequency::PerIteration(0))
-        ) {
+        if self.evaluation_frequency == Some(0) {
             return Err("evaluation interval must be positive".into());
         }
         Ok(())
@@ -119,6 +66,8 @@ pub struct HistoryRow {
 }
 
 pub trait AbstractReporter<Observation> {
+    fn progress(&mut self, step: Step, total: usize);
+
     fn record(&mut self, step: Step, metrics: &[(&'static str, f64)]);
 
     fn policy(
@@ -176,6 +125,19 @@ impl<'a, Observation> Reporter<'a, Observation> {
 }
 
 impl<Observation> AbstractReporter<Observation> for Reporter<'_, Observation> {
+    fn progress(&mut self, step: Step, total: usize) {
+        if !std::io::stderr().is_terminal() {
+            return;
+        }
+        let label = match step {
+            Step::Episode(_) => "Episode",
+            Step::Epoch(_) => "Epoch",
+            Step::Iteration(_) => "Iteration",
+        };
+        let (_, number) = step.parts();
+        eprint!("\r{label} {number}/{total}");
+    }
+
     fn record(&mut self, step: Step, metrics: &[(&'static str, f64)]) {
         let (unit, number) = step.parts();
         self.history.push(HistoryRow {
@@ -198,10 +160,11 @@ impl<Observation> AbstractReporter<Observation> for Reporter<'_, Observation> {
         step: Step,
         make_policy: &mut dyn FnMut() -> Box<dyn DiscretePolicy<Observation = Observation>>,
     ) {
+        let (_, number) = step.parts();
         if !self
             .config
             .evaluation_frequency
-            .is_some_and(|frequency| frequency.matches(step))
+            .is_some_and(|frequency| number % frequency == 0)
         {
             return;
         }
@@ -261,19 +224,11 @@ mod tests {
     use crate::policy::TabularPolicy;
 
     #[test]
-    fn frequency_matches_its_step_unit() {
-        assert!(Frequency::PerEpisode(2).matches(Step::Episode(4)));
-        assert!(!Frequency::PerEpisode(2).matches(Step::Iteration(4)));
-        assert!(!Frequency::PerIteration(3).matches(Step::Iteration(4)));
-        assert!("episode:0".parse::<Frequency>().is_err());
-    }
-
-    #[test]
     fn policy_factory_is_lazy_and_records_every_scalar_row() {
         let mut environment = BlackBox::new(1, 1, 0, |state, _| (state, 1.0));
         let mut reporter = Reporter::new(
             ReporterConfig {
-                evaluation_frequency: Some(Frequency::PerEpisode(2)),
+                evaluation_frequency: Some(2),
                 evaluation_episodes: 1,
                 evaluation_max_steps: 1,
             },

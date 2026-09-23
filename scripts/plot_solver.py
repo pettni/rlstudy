@@ -21,10 +21,12 @@ for row in history:
 if not series:
     raise ValueError("solver output contains no history data to plot")
 
+columns = 2 if len(series) > 5 else 1
+rows = (len(series) + columns - 1) // columns
 figure, axes = plt.subplots(
-    len(series), 1, squeeze=False, figsize=(9, 2.5 * len(series))
+    rows, columns, squeeze=False, figsize=(9 * columns, 2.5 * rows)
 )
-for axis, ((unit, name), points) in zip(axes[:, 0], sorted(series.items())):
+for axis, ((unit, name), points) in zip(axes.flat, sorted(series.items())):
     steps, values = zip(*points)
     if unit == "episode" and not name.startswith("eval/"):
         axis.plot(steps, values, alpha=0.25, label="Raw")
@@ -39,6 +41,9 @@ for axis, ((unit, name), points) in zip(axes[:, 0], sorted(series.items())):
         axis.plot(steps, values, marker="o" if name.startswith("eval/") else None)
     axis.set_ylabel(name)
     axis.set_xlabel(unit.capitalize())
+
+for axis in list(axes.flat)[len(series) :]:
+    axis.set_visible(False)
 
 figure.tight_layout()
 figure.savefig(sys.stdout.buffer, format="png", dpi=150)

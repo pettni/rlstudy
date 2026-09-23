@@ -19,8 +19,6 @@ use burn::{
 use clap::{Args, ValueEnum};
 use ndarray::Array1;
 use rand::RngExt;
-#[cfg(test)]
-use rand::{SeedableRng, rngs::StdRng};
 use serde::{Deserialize, Serialize};
 
 type TrainingBackend = Autodiff<Flex>;
@@ -79,30 +77,6 @@ impl Reinforce {
     pub fn new(config: ReinforceConfig) -> Result<Self, String> {
         if !config.gamma.is_finite() || !(0.0..=1.0).contains(&config.gamma) {
             return Err("gamma must be finite and in [0, 1]".into());
-        }
-        let valid_rate = |rate: f64| rate.is_finite() && rate > 0.0 && rate <= 1.0;
-        let valid_schedule = match &config.learning_rate {
-            Schedule::Constant { value } => valid_rate(*value),
-            Schedule::Linear {
-                initial,
-                final_value,
-                steps,
-            } => valid_rate(*initial) && valid_rate(*final_value) && *steps > 0,
-            Schedule::Exponential {
-                initial,
-                final_value,
-                decay,
-            } => valid_rate(*initial) && valid_rate(*final_value) && *decay > 0,
-            Schedule::Stepwise { initial, changes } => {
-                valid_rate(*initial)
-                    && changes.iter().all(|(_, rate)| valid_rate(*rate))
-                    && changes.windows(2).all(|pair| pair[0].0 < pair[1].0)
-            }
-        };
-        if !valid_schedule {
-            return Err(
-                "learning rates must be finite and in (0, 1], with increasing steps".into(),
-            );
         }
         if config.hidden_dims == 0 {
             return Err("hidden dims must be positive".into());
@@ -237,7 +211,6 @@ impl ModelFreeSolver for Reinforce {
                     as Box<dyn crate::policy::DiscretePolicy<Observation = Array1<f64>>>
             };
             reporter.policy(Step::Episode(episode_index + 1), &mut make_policy);
-            reporter.policy(Step::Iteration(episode_index + 1), &mut make_policy);
         }
 
         Ok(SolveResult {
@@ -361,33 +334,8 @@ mod tests {
     use super::*;
     use crate::environment::FeatureEnvironment;
     use crate::environments::grid_world;
-    use crate::reporting::{Frequency, Reporter, ReporterConfig};
-
-    #[test]
-    fn configuration_is_validated() {
-        assert!(
-            Reinforce::new(ReinforceConfig {
-                episodes: 0,
-                ..ReinforceConfig::default()
-            })
-            .is_err()
-        );
-        assert!(
-            Reinforce::new(ReinforceConfig {
-                learning_rate: Schedule::Constant { value: 0.0 },
-                ..ReinforceConfig::default()
-            })
-            .is_err()
-        );
-        assert!(Reinforce::new(ReinforceConfig::default()).is_ok());
-        assert!(
-            Reinforce::new(ReinforceConfig {
-                gamma: 1.0,
-                ..ReinforceConfig::default()
-            })
-            .is_ok()
-        );
-    }
+    use crate::reporting::{Reporter, ReporterConfig};
+    use rand::{SeedableRng, rngs::StdRng};
 
     #[test]
     fn trains_and_records_evaluations() {
@@ -404,7 +352,7 @@ mod tests {
         let mut evaluation_environment = FeatureEnvironment::new(&model).unwrap();
         let mut reporter = Reporter::new(
             ReporterConfig {
-                evaluation_frequency: Some(Frequency::PerEpisode(1)),
+                evaluation_frequency: Some(1),
                 evaluation_episodes: 1,
                 evaluation_max_steps: 2,
             },

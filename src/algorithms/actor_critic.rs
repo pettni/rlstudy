@@ -221,7 +221,6 @@ impl ModelFreeSolver for ActorCritic {
                     as Box<dyn crate::policy::DiscretePolicy<Observation = Array1<f64>>>
             };
             reporter.policy(Step::Episode(episode_index + 1), &mut make_policy);
-            reporter.policy(Step::Iteration(episode_index + 1), &mut make_policy);
         }
 
         Ok(SolveResult {
@@ -238,7 +237,7 @@ mod tests {
     use super::*;
     use crate::environment::FeatureEnvironment;
     use crate::environments::grid_world;
-    use crate::reporting::{Frequency, Reporter, ReporterConfig};
+    use crate::reporting::{Reporter, ReporterConfig};
     use rand::{SeedableRng, rngs::StdRng};
 
     #[test]
@@ -282,7 +281,7 @@ mod tests {
         let mut evaluation_environment = FeatureEnvironment::new(&model).unwrap();
         let mut reporter = Reporter::new(
             ReporterConfig {
-                evaluation_frequency: Some(Frequency::PerEpisode(1)),
+                evaluation_frequency: Some(1),
                 evaluation_episodes: 1,
                 evaluation_max_steps: 2,
             },

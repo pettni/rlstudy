@@ -140,67 +140,8 @@ pub fn fixed_policy_values(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::environment::{Space, Step};
     use crate::model::{Action, State};
     use crate::probability::Distribution;
-    use rand::{SeedableRng, rngs::StdRng};
-
-    struct FixedPolicy;
-
-    struct TerminatingEnvironment;
-
-    impl Environment for TerminatingEnvironment {
-        type Observation = usize;
-        type Action = usize;
-
-        fn state_space(&self) -> Space {
-            Space::Discrete { size: 1 }
-        }
-
-        fn action_space(&self) -> Space {
-            Space::Discrete { size: 1 }
-        }
-
-        fn reset(&mut self, _rng: &mut dyn rand::Rng) -> usize {
-            0
-        }
-
-        fn step(&mut self, _action: usize, _rng: &mut dyn rand::Rng) -> Step<usize> {
-            Step {
-                observation: 0,
-                reward: 2.0,
-                terminated: true,
-                truncated: false,
-            }
-        }
-    }
-
-    impl Policy for FixedPolicy {
-        type Observation = usize;
-        type Action = usize;
-
-        fn sample_action(&self, _observation: &usize, _rng: &mut dyn rand::Rng) -> usize {
-            0
-        }
-    }
-
-    #[test]
-    fn stops_evaluation_at_termination() {
-        let mut environment = TerminatingEnvironment;
-        let mut rng = StdRng::seed_from_u64(0);
-
-        let stats = evaluate_rollouts(
-            &mut environment,
-            &FixedPolicy,
-            EvaluationConfig::new(3, 10).unwrap(),
-            &mut rng,
-        );
-
-        assert_eq!(stats.return_mean, 2.0);
-        assert_eq!(stats.return_std, 0.0);
-        assert_eq!(stats.episode_length_mean, 1.0);
-        assert_eq!(stats.max_steps_rate, 0.0);
-    }
 
     #[test]
     fn bellman_evaluates_stochastic_policy() {

@@ -31,6 +31,38 @@ pub trait Environment {
     fn step(&mut self, action: Self::Action, rng: &mut dyn rand::Rng) -> Step<Self::Observation>;
 }
 
+pub struct Rollout<'a, E: Environment + ?Sized> {
+    environment: &'a mut E,
+    observation: E::Observation,
+}
+
+impl<'a, E: Environment + ?Sized> Rollout<'a, E> {
+    pub fn new(environment: &'a mut E, rng: &mut dyn rand::Rng) -> Self {
+        let observation = environment.reset(rng);
+        Self {
+            environment,
+            observation,
+        }
+    }
+
+    pub fn observation(&self) -> &E::Observation {
+        &self.observation
+    }
+
+    pub fn step(&mut self, action: E::Action, rng: &mut dyn rand::Rng) -> Step<E::Observation>
+    where
+        E::Observation: Clone,
+    {
+        let step = self.environment.step(action, rng);
+        self.observation = step.observation.clone();
+        step
+    }
+
+    pub fn reset(&mut self, rng: &mut dyn rand::Rng) {
+        self.observation = self.environment.reset(rng);
+    }
+}
+
 pub struct TabularEnvironment<'a> {
     model: &'a TabularModel,
     state: Option<usize>,

@@ -265,14 +265,6 @@ impl ModelFreeSolver for DeepQLearning {
                 iter += 1;
                 episode_loss += loss;
                 episode_gradient_norm += gradient_norm;
-                let mut make_policy = || {
-                    Box::new(DeepQPolicy::new(
-                        trainer.inference_model(),
-                        DeepQPolicyMode::Greedy,
-                    )) as Box<dyn DiscretePolicy<Observation = Array1<f64>>>
-                };
-                reporter.policy(Step::Iteration(iter), &mut make_policy);
-
                 if step.terminated
                     || step.truncated
                     || self

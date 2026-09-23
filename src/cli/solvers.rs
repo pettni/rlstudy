@@ -3,6 +3,7 @@ use rlstudy::algorithms::{
     ActorCritic, ActorCriticConfig, ApproximateTD, ApproximateTDConfig, DeepQLearning, DqnArgs,
     MonteCarlo, MonteCarloConfig, PolicyIterationConfig, Reinforce, ReinforceConfig, TD, TDConfig,
     TruncatedPolicyIteration, TruncatedPolicyIterationConfig, ValueIterationConfig,
+    VanillaPolicyGradient, VanillaPolicyGradientConfig,
 };
 use serde::{Serialize, de::DeserializeOwned};
 use std::{fs, path::Path};
@@ -16,6 +17,7 @@ pub(super) enum Solver {
     TD(TDConfig),
     Dqn(DqnArgs),
     Reinforce(ReinforceConfig),
+    Vpg(VanillaPolicyGradientConfig),
     ActorCritic(ActorCriticConfig),
     ApproximateTD(ApproximateTDConfig),
 }
@@ -30,6 +32,7 @@ impl Solver {
             Self::TD(_) => "td",
             Self::Dqn(_) => "dqn",
             Self::Reinforce(_) => "reinforce",
+            Self::Vpg(_) => "vpg",
             Self::ActorCritic(_) => "actor-critic",
             Self::ApproximateTD(_) => "approximate-td",
         }
@@ -42,6 +45,7 @@ pub(super) enum SelectedSolver {
     TD(TD),
     Dqn(DeepQLearning),
     Reinforce(Reinforce),
+    Vpg(VanillaPolicyGradient),
     ActorCritic(ActorCritic),
     ApproximateTD(ApproximateTD),
 }
@@ -98,6 +102,13 @@ pub(super) fn build_solver(
                 parameters,
             ))
         }
+        Solver::Vpg(config) => {
+            let (config, parameters) = resolve_config(config, config_path)?;
+            Ok((
+                SelectedSolver::Vpg(VanillaPolicyGradient::new(config)?),
+                parameters,
+            ))
+        }
         Solver::ActorCritic(config) => {
             let (config, parameters) = resolve_config(config, config_path)?;
             Ok((
@@ -144,7 +155,10 @@ where
 
 #[cfg(test)]
 mod tests {
-    use rlstudy::algorithms::{ActorCriticConfig, ApproximateTDConfig, DqnConfig, ReinforceConfig};
+    use rlstudy::algorithms::{
+        ActorCriticConfig, ApproximateTDConfig, DqnConfig, ReinforceConfig,
+        VanillaPolicyGradientConfig,
+    };
 
     #[test]
     fn dqn_yaml_uses_defaults_for_missing_fields() {
@@ -187,6 +201,14 @@ mod tests {
         .unwrap();
 
         assert!(rlstudy::algorithms::ActorCritic::new(config).is_ok());
+    }
+
+    #[test]
+    fn checked_in_vpg_config_parses() {
+        let config: VanillaPolicyGradientConfig =
+            yaml_serde::from_str(include_str!("../../settings/vpg_for_cartpole.yaml")).unwrap();
+
+        assert!(rlstudy::algorithms::VanillaPolicyGradient::new(config).is_ok());
     }
 
     #[test]
