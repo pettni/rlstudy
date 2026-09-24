@@ -88,7 +88,7 @@ impl<A: ActionType> TransitionBufferTensorData<A> {
     }
 }
 
-pub struct Transition<A: ActionType> {
+pub struct Transition<A> {
     pub s: ndarray::Array1<f64>,
     pub a: A,
     pub log_pi_a_s: f64,
@@ -106,12 +106,12 @@ pub struct EpisodeStats {
 }
 
 // Store (s,a,r,s') data with convenient tensor data access
-pub struct TransitionBuffer<A: ActionType> {
+pub struct TransitionBuffer<A> {
     max_size: Option<usize>,
     transitions: VecDeque<Transition<A>>,
 }
 
-impl<A: ActionType> TransitionBuffer<A> {
+impl<A> TransitionBuffer<A> {
     pub fn new(max_size: Option<usize>) -> Self {
         TransitionBuffer {
             max_size,
@@ -186,6 +186,7 @@ impl<A: ActionType> TransitionBuffer<A> {
         rng: &mut dyn rand::Rng,
     ) -> &Transition<A>
     where
+        A: Clone,
         E: Environment<Observation = Array1<f64>, Action = A> + ?Sized,
         P: Policy<Observation = Array1<f64>, Action = A> + ?Sized,
     {
@@ -213,6 +214,7 @@ impl<A: ActionType> TransitionBuffer<A> {
         pi: &P,
         rng: &mut dyn rand::Rng,
     ) where
+        A: Clone,
         P: Policy<Observation = Array1<f64>, Action = A> + ?Sized,
     {
         let mut rollout = Rollout::new(env, rng);
@@ -234,6 +236,7 @@ impl<A: ActionType> TransitionBuffer<A> {
         rng: &mut dyn rand::Rng,
         n: usize,
     ) where
+        A: Clone,
         E: Environment<Observation = Array1<f64>, Action = A> + ?Sized,
         P: Policy<Observation = Array1<f64>, Action = A> + ?Sized,
     {
@@ -246,7 +249,10 @@ impl<A: ActionType> TransitionBuffer<A> {
     }
 
     /// Return all data in order
-    pub fn tensor_data(&self) -> TransitionBufferTensorData<A> {
+    pub fn tensor_data(&self) -> TransitionBufferTensorData<A>
+    where
+        A: ActionType,
+    {
         self.tensor_data_impl(self.transitions.iter())
     }
 
@@ -255,7 +261,10 @@ impl<A: ActionType> TransitionBuffer<A> {
         &self,
         n: usize,
         rng: &mut dyn rand::Rng,
-    ) -> TransitionBufferTensorData<A> {
+    ) -> TransitionBufferTensorData<A>
+    where
+        A: ActionType,
+    {
         let transitions = rand::seq::index::sample(rng, self.transitions.len(), n)
             .into_iter()
             .map(|index| &self.transitions[index]);
@@ -268,7 +277,7 @@ impl<A: ActionType> TransitionBuffer<A> {
         transitions: impl ExactSizeIterator<Item = &'a Transition<A>>,
     ) -> TransitionBufferTensorData<A>
     where
-        A: 'a,
+        A: ActionType + 'a,
     {
         let state_dim = self.transitions.front().expect("buffer is empty").s.len();
         let size = transitions.len();

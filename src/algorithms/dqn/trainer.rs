@@ -76,7 +76,7 @@ impl DqnTrainer {
             .next()
             .expect("loss tensor has one element");
         let gradients = GradientsParams::from_grads(loss.backward(), &self.online);
-        let gradient_norm = gradient_norm::<TrainingBackend, _>(&self.online, &gradients);
+        let gradient_norm = gradient_norm(&self.online, &gradients);
 
         self.online = self.optimizer.step(learning_rate, self.online, gradients);
         (self, loss_value, gradient_norm)
@@ -87,7 +87,7 @@ impl DqnTrainer {
     }
 
     pub(super) fn soft_update_target(&mut self, rate: f64) {
-        self.target = ema::update::<TrainingBackend, _>(self.target.clone(), &self.online, rate);
+        self.target = ema::update(self.target.clone(), &self.online, rate);
     }
 
     pub(super) fn policy_view(&self, mode: DeepQPolicyMode) -> DeepQPolicy<'_, TrainingBackend> {

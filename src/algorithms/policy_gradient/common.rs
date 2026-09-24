@@ -207,10 +207,7 @@ impl<Action> PolicyGradient<Action> {
 
                 let pi_grad = GradientsParams::from_grads(pi_loss.backward(), &pi);
                 update_metrics.record("pi/loss", pi_loss.into_scalar().elem::<f64>());
-                update_metrics.record(
-                    "pi/grad_norm",
-                    gradient_norm::<TrainingBackend, _>(&pi, &pi_grad),
-                );
+                update_metrics.record("pi/grad_norm", gradient_norm(&pi, &pi_grad));
                 pi = pi_optimizer.step(pi_learning_rate, pi, pi_grad);
                 policy_updates += 1;
             }
@@ -224,10 +221,7 @@ impl<Action> PolicyGradient<Action> {
 
                 let v_grad = GradientsParams::from_grads(v_loss.backward(), &v);
                 update_metrics.record("v/loss", v_loss.into_scalar().elem::<f64>());
-                update_metrics.record(
-                    "v/grad_norm",
-                    gradient_norm::<TrainingBackend, _>(&v, &v_grad),
-                );
+                update_metrics.record("v/grad_norm", gradient_norm(&v, &v_grad));
                 v = v_optimizer.step(v_learning_rate, v, v_grad);
             }
 

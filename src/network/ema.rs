@@ -1,13 +1,13 @@
+use crate::backend::TrainingBackend;
 use burn::{
     Tensor,
     module::{Module, ModuleMapper, ModuleVisitor, Param},
     tensor::{backend::Backend, container::TensorContainer},
 };
 
-pub fn update<B, M>(target: M, source: &M, rate: f64) -> M
+pub fn update<M>(target: M, source: &M, rate: f64) -> M
 where
-    B: Backend,
-    M: Module<B>,
+    M: Module<TrainingBackend>,
 {
     let mut collector = ParameterCollector::new();
     source.visit(&mut collector);
@@ -72,8 +72,8 @@ impl<B: Backend> ModuleMapper<B> for EmaMapper {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::backend::{TrainingBackend, device};
     use burn::{
-        backend::{Flex, flex::FlexDevice},
         module::Reinitializer,
         nn::{Linear, LinearConfig},
     };
@@ -84,24 +84,23 @@ mod tests {
         second: Linear<B>,
     }
 
-    fn model(device: &FlexDevice) -> TestModel<Flex> {
+    fn model() -> TestModel<TrainingBackend> {
         TestModel {
-            first: LinearConfig::new(2, 3).init(device),
-            second: LinearConfig::new(3, 1).init(device),
+            first: LinearConfig::new(2, 3).init(device()),
+            second: LinearConfig::new(3, 1).init(device()),
         }
     }
 
     #[test]
     fn updates_every_float_parameter() {
-        let device = FlexDevice;
-        let target = Reinitializer::<Flex>::new()
+        let target = Reinitializer::<TrainingBackend>::new()
             .constant_float(2.0)
-            .apply(model(&device));
-        let source = Reinitializer::<Flex>::new()
+            .apply(model());
+        let source = Reinitializer::<TrainingBackend>::new()
             .constant_float(6.0)
-            .apply(model(&device));
+            .apply(model());
 
-        let updated = update::<Flex, _>(target, &source, 0.25);
+        let updated = update(target, &source, 0.25);
 
         assert!(
             updated

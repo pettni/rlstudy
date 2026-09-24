@@ -2,18 +2,20 @@ use crate::algorithms::{ModelFreeSolver, SolveResult, SolveStatus};
 use crate::backend::{TrainingBackend, device};
 use crate::environment::{Environment, Space};
 use crate::network::{
-    actor::CategoricalActor,
+    action::ActionType,
+    actor::{Actor, CategoricalActor},
     gradient_norm,
     mlp::{Activation, MlpModel},
 };
 use crate::policy::Policy;
 use crate::reporting::{Reporter, Step};
 use crate::schedule::Schedule;
+use burn::tensor::ElementConversion;
 use burn::{
     Tensor,
     module::AutodiffModule,
     optim::{Adam, AdamConfig, GradientsParams, Optimizer, adaptor::OptimizerAdaptor},
-    tensor::{Int, TensorData, activation::log_softmax, backend::Backend},
+    tensor::{TensorData, backend::Backend},
 };
 use clap::Args;
 use ndarray::Array1;
@@ -156,10 +158,7 @@ impl ModelFreeSolver for ActorCritic {
                     TensorData::new(state.to_vec(), [1, n_s]),
                     device(),
                 );
-                let at = Tensor::<TrainingBackend, 2, Int>::from_data(
-                    TensorData::new(vec![action as i64], [1, 1]),
-                    device(),
-                );
+                let at = usize::tensor_data(&[&action]);
                 let stp = Tensor::<TrainingBackend, 2>::from_data(
                     TensorData::new(step.observation.to_vec(), [1, n_s]),
                     device(),
@@ -174,28 +173,22 @@ impl ModelFreeSolver for ActorCritic {
                 let critic_loss = td_error.clone().square();
                 let critic_grad = GradientsParams::from_grads(critic_loss.backward(), &v);
 
-                critic_gradient_norm_sum += gradient_norm::<TrainingBackend, _>(&v, &critic_grad);
+                critic_gradient_norm_sum += gradient_norm(&v, &critic_grad);
 
                 v = v_optimizer.step(critic_learning_rate, v, critic_grad);
 
                 // actor update
-                let log_probs = log_softmax(pi.forward(st), 1);
-                let ln_pi = log_probs.clone().gather(1, at);
-                let actor_loss = (td_error.clone().detach() * ln_pi).neg();
+                let ln_pi = pi.log_probs(st.clone(), &at);
+                let entropy = pi.entropy(st).mean().into_scalar().elem::<f64>();
+                let actor_loss = (td_error.clone().detach().squeeze_dim(1) * ln_pi).neg();
                 let actor_grad = GradientsParams::from_grads(actor_loss.backward(), &pi);
 
-                actor_gradient_norm_sum += gradient_norm::<TrainingBackend, _>(&pi, &actor_grad);
+                actor_gradient_norm_sum += gradient_norm(&pi, &actor_grad);
 
                 pi = pi_optimizer.step(actor_learning_rate, pi, actor_grad);
 
                 // metrics
-                entropy_sum += (log_probs.clone().exp() * log_probs)
-                    .sum()
-                    .neg()
-                    .into_data()
-                    .iter::<f64>()
-                    .next()
-                    .expect("entropy tensor has one element");
+                entropy_sum += entropy;
                 episode_return += step.reward;
                 episode_length = t + 1;
 

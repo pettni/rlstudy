@@ -217,7 +217,7 @@ impl ModelFreeSolver for ApproximateTD {
                         .next()
                         .expect("loss tensor has one element");
                     let grad = GradientsParams::from_grads(loss.backward(), &q);
-                    episode_gradient_norm += gradient_norm::<TrainingBackend, _>(&q, &grad);
+                    episode_gradient_norm += gradient_norm(&q, &grad);
                     q = optimizer.step(learning_rate, q, grad);
                     pending.pop_front();
                 }

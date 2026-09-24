@@ -2,7 +2,7 @@ use crate::algorithms::{ModelFreeSolver, SolveResult, SolveStatus};
 use crate::backend::{TrainingBackend, device};
 use crate::environment::{Environment, Rollout, Space};
 use crate::network::{
-    actor::CategoricalActor,
+    actor::{Actor, CategoricalActor},
     gradient_norm,
     mlp::{Activation, MlpModel},
 };
@@ -10,10 +10,11 @@ use crate::reporting::{Reporter, Step};
 use crate::schedule::Schedule;
 use crate::transition_buffer::TransitionBuffer;
 use burn::grad_clipping::GradientClippingConfig;
+use burn::tensor::ElementConversion;
 use burn::{
     module::AutodiffModule,
     optim::{Adam, AdamConfig, GradientsParams, Optimizer, adaptor::OptimizerAdaptor},
-    tensor::{activation::log_softmax, backend::Backend},
+    tensor::backend::Backend,
 };
 use clap::{Args, ValueEnum};
 use ndarray::Array1;
@@ -155,16 +156,17 @@ impl ModelFreeSolver for Reinforce {
             };
             let delta_pi = batch.discount_from_episode_start(delta_pi, self.config.gamma);
 
-            let log_probs = log_softmax(pi.forward(batch.s.clone()), 1); // [T, A]
-            let ln_pi = log_probs
-                .clone()
-                .gather(1, batch.a.reshape([-1, 1]))
-                .squeeze_dim(1);
+            let ln_pi = pi.log_probs(batch.s.clone(), &batch.a);
+            let entropy = pi
+                .entropy(batch.s.clone())
+                .mean()
+                .into_scalar()
+                .elem::<f64>();
             let pi_loss = (delta_pi.detach() * ln_pi).sum().neg();
             let grad_pi = GradientsParams::from_grads(pi_loss.backward(), &pi);
 
             // observability
-            let gradient_norm = gradient_norm::<TrainingBackend, _>(&pi, &grad_pi);
+            let gradient_norm = gradient_norm(&pi, &grad_pi);
             let learning_rate = self.config.learning_rate.value(episode_index);
 
             pi = pi_optimizer.step(learning_rate, pi, grad_pi);
@@ -205,17 +207,7 @@ impl ModelFreeSolver for Reinforce {
                             .expect("return tensor has one element"),
                     ),
                     ("train/length", episode_length as f64),
-                    (
-                        "policy/entropy",
-                        (log_probs.clone().exp() * log_probs.clone())
-                            .sum()
-                            .neg()
-                            .into_data()
-                            .iter::<f64>()
-                            .next()
-                            .expect("entropy tensor has one element")
-                            / episode_length as f64,
-                    ),
+                    ("policy/entropy", entropy),
                     ("grad/norm", gradient_norm),
                     ("optimizer/lr", learning_rate),
                 ],
