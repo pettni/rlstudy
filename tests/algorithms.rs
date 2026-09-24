@@ -11,22 +11,29 @@ use rlstudy::evaluation::fixed_policy_values;
 use rlstudy::policy::TabularPolicy;
 use rlstudy::reporting::{Reporter, ReporterConfig};
 
-fn preferred_action(result: &TabularSolveResult, state: usize) -> usize {
-    result.policy.greedy_action(&state)
+fn preferred_action(result: &TabularSolveResult, state: usize, num_actions: usize) -> usize {
+    (0..num_actions)
+        .max_by(|a, b| {
+            result
+                .policy
+                .log_prob(&state, a)
+                .total_cmp(&result.policy.log_prob(&state, b))
+        })
+        .unwrap()
 }
 
 fn assert_solves_grid_world(name: &str, result: &TabularSolveResult) {
     assert!(
-        [1, 2].contains(&preferred_action(result, 0)),
+        [1, 2].contains(&preferred_action(result, 0, 5)),
         "{name}: policy should move right or down from state 0",
     );
     assert_eq!(
-        preferred_action(result, 1),
+        preferred_action(result, 1, 5),
         2,
         "{name}: policy should move down from state 1",
     );
     assert_eq!(
-        preferred_action(result, 2),
+        preferred_action(result, 2, 5),
         3,
         "{name}: policy should move left from state 2",
     );
@@ -41,7 +48,7 @@ fn model_based_solver_solves_grid_world(name: &str, solver: TruncatedPolicyItera
     // The goal state (bottom-right, index 8) should have the highest value.
     let probabilities = Array2::from_shape_fn(
         (model.states().len(), model.actions().len()),
-        |(state, action)| result.policy.action_probabilities(&state)[action],
+        |(state, action)| result.policy.log_prob(&state, &action).exp(),
     );
     let values = fixed_policy_values(&model, &probabilities, 0.5).unwrap();
     let goal_value = values[8];
@@ -55,21 +62,21 @@ fn model_based_solver_solves_grid_world(name: &str, solver: TruncatedPolicyItera
     assert!(matches!(result.status, SolveStatus::Converged { .. }));
 
     assert_eq!(
-        preferred_action(&result, 0),
+        preferred_action(&result, 0, 5),
         1,
         "{}: policy action at state 0 should be 1",
         name,
     );
 
     assert_eq!(
-        preferred_action(&result, 1),
+        preferred_action(&result, 1, 5),
         2,
         "{}: policy action at state 1 should be 2",
         name,
     );
 
     assert_eq!(
-        preferred_action(&result, 2),
+        preferred_action(&result, 2, 5),
         3,
         "{}: policy action at state 2 should be 3",
         name,
@@ -245,7 +252,7 @@ fn q_learning_uses_negative_next_state_values() {
     .solve(&mut environment, &mut rng)
     .unwrap();
 
-    assert_eq!(preferred_action(&result, 0), 0);
+    assert_eq!(preferred_action(&result, 0, 2), 0);
 }
 
 #[test]

@@ -1,47 +1,15 @@
 //! Transition storage and tensor conversion.
 
+use crate::backend::{TrainingBackend, device};
 use crate::environment::{Environment, Rollout};
+use crate::network::action::ActionType;
 use crate::policy::Policy;
 use burn::{
     Tensor,
-    backend::{Autodiff, Flex, flex::FlexDevice},
     tensor::{Bool, Int, TensorData},
 };
 use ndarray::Array1;
 use std::collections::VecDeque;
-
-type TrainingBackend = Autodiff<Flex>;
-
-pub trait ActionType: Clone {
-    type TensorType;
-
-    fn tensor_data(actions: &[&Self]) -> Self::TensorType;
-}
-
-impl ActionType for usize {
-    type TensorType = Tensor<TrainingBackend, 1, Int>;
-
-    fn tensor_data(actions: &[&Self]) -> Self::TensorType {
-        let values = actions.iter().map(|x| **x as i64).collect::<Vec<_>>();
-        Tensor::from_data(TensorData::new(values, [actions.len()]), &FlexDevice)
-    }
-}
-
-impl ActionType for Array1<f64> {
-    type TensorType = Tensor<TrainingBackend, 2>;
-
-    fn tensor_data(actions: &[&Self]) -> Self::TensorType {
-        let action_dim = actions.first().expect("buffer is empty").len();
-        let values = actions
-            .iter()
-            .flat_map(|a| a.iter().copied())
-            .collect::<Vec<_>>();
-        Tensor::from_data(
-            TensorData::new(values, [actions.len(), action_dim]),
-            &FlexDevice,
-        )
-    }
-}
 
 pub struct TransitionBufferTensorData<A: ActionType> {
     // [s0, ..., s_{T-1}]
@@ -105,10 +73,7 @@ impl<A: ActionType> TransitionBufferTensorData<A> {
 
     /// Compute discounted returns with V(s) = 0.
     pub fn discounted_returns_no_bootstrapping(&self, gamma: f64) -> Tensor<TrainingBackend, 1> {
-        self.discounted_returns(
-            |states| Tensor::zeros([states.shape()[0]], &FlexDevice),
-            gamma,
-        )
+        self.discounted_returns(|states| Tensor::zeros([states.shape()[0]], device()), gamma)
     }
 
     /// Discount 'values' from sequence start
@@ -327,13 +292,13 @@ impl<A: ActionType> TransitionBuffer<A> {
         }
 
         TransitionBufferTensorData::<A> {
-            s: Tensor::from_data(TensorData::new(states, [size, state_dim]), &FlexDevice),
+            s: Tensor::from_data(TensorData::new(states, [size, state_dim]), device()),
             a: A::tensor_data(&actions),
-            log_probs: Tensor::from_data(TensorData::new(log_probs, [size]), &FlexDevice),
-            r: Tensor::from_data(TensorData::new(rewards, [size]), &FlexDevice),
-            sp: Tensor::from_data(TensorData::new(next_states, [size, state_dim]), &FlexDevice),
-            truncated: Tensor::from_data(TensorData::new(truncated, [size]), &FlexDevice),
-            terminated: Tensor::from_data(TensorData::new(terminated, [size]), &FlexDevice),
+            log_probs: Tensor::from_data(TensorData::new(log_probs, [size]), device()),
+            r: Tensor::from_data(TensorData::new(rewards, [size]), device()),
+            sp: Tensor::from_data(TensorData::new(next_states, [size, state_dim]), device()),
+            truncated: Tensor::from_data(TensorData::new(truncated, [size]), device()),
+            terminated: Tensor::from_data(TensorData::new(terminated, [size]), device()),
         }
     }
 }
@@ -345,7 +310,7 @@ fn segment_offsets(
     Tensor<TrainingBackend, 1, Int>,
 ) {
     let size = starts.shape()[0];
-    let indices = Tensor::<TrainingBackend, 1, Int>::arange(0..size as i64, &FlexDevice);
+    let indices = Tensor::<TrainingBackend, 1, Int>::arange(0..size as i64, device());
     let start_indices = indices.clone().mask_fill(starts.bool_not(), 0).cummax(0);
     let offsets = indices - start_indices.clone();
     (offsets, start_indices)
@@ -364,10 +329,10 @@ fn segmented_discounted_cumsum(
     let values = values.flip([0]);
     let starts = boundaries.flip([0]).slice_assign(
         0..1,
-        Tensor::<TrainingBackend, 1, Bool>::from_data([true], &FlexDevice),
+        Tensor::<TrainingBackend, 1, Bool>::from_data([true], device()),
     );
     let (offsets, start_indices) = segment_offsets(starts);
-    let powers = Tensor::<TrainingBackend, 1>::full(values.shape(), discount, &FlexDevice)
+    let powers = Tensor::<TrainingBackend, 1>::full(values.shape(), discount, device())
         .powf(offsets.float());
     let cumulative = (values / powers.clone()).cumsum(0);
     let before_start = cumulative
@@ -385,7 +350,7 @@ fn discounts_from_episode_start(
     let size = boundaries.shape()[0];
     let starts = Tensor::cat(
         vec![
-            Tensor::<TrainingBackend, 1, Bool>::from_data([true], &FlexDevice),
+            Tensor::<TrainingBackend, 1, Bool>::from_data([true], device()),
             boundaries,
         ],
         0,
@@ -393,7 +358,7 @@ fn discounts_from_episode_start(
     .slice(0..size);
     let (offsets, _) = segment_offsets(starts);
 
-    Tensor::<TrainingBackend, 1>::full([size], discount, &FlexDevice).powf(offsets.float())
+    Tensor::<TrainingBackend, 1>::full([size], discount, device()).powf(offsets.float())
 }
 
 #[cfg(test)]
@@ -441,6 +406,10 @@ mod tests {
     impl Policy for FixedPolicy {
         type Observation = Array1<f64>;
         type Action = usize;
+
+        fn log_prob(&self, _observation: &Array1<f64>, action: &usize) -> f64 {
+            if *action == 0 { 0.0 } else { f64::NEG_INFINITY }
+        }
 
         fn sample_action_with_log_prob(
             &self,

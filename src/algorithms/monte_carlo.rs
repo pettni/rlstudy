@@ -1,7 +1,7 @@
 use crate::algorithms::{ModelFreeSolver, SolveResult, SolveStatus, validate_gamma};
 use crate::environment::{Environment, Space};
 use crate::policy::{Policy, PolicyObjective, TabularPolicy};
-use crate::reporting::{AbstractReporter, Step};
+use crate::reporting::{Reporter, Step};
 use clap::Args;
 use ndarray::Array2;
 use serde::{Deserialize, Serialize};
@@ -53,12 +53,13 @@ impl MonteCarlo {
 
 impl ModelFreeSolver for MonteCarlo {
     type Observation = usize;
+    type Action = usize;
 
     fn solve_with_reporter(
         &self,
         env: &mut dyn Environment<Observation = usize, Action = usize>,
         rng: &mut dyn rand::Rng,
-        reporter: &mut dyn AbstractReporter<usize>,
+        reporter: &mut Reporter<'_, usize>,
     ) -> Result<SolveResult<usize>, String> {
         let Space::Discrete { size: n_s } = env.state_space() else {
             return Err("Monte Carlo requires a discrete state space".into());
@@ -119,7 +120,7 @@ impl ModelFreeSolver for MonteCarlo {
                     ("train/length", episode_length),
                 ],
             );
-            reporter.policy(Step::Episode(episode_number), &mut || Box::new(pi.clone()));
+            reporter.policy(Step::Episode(episode_number), || pi.clone());
         }
 
         Ok(SolveResult {

@@ -18,6 +18,8 @@ pub trait Policy {
     type Observation;
     type Action;
 
+    fn log_prob(&self, observation: &Self::Observation, action: &Self::Action) -> f64;
+
     fn sample_action(
         &self,
         observation: &Self::Observation,
@@ -74,6 +76,10 @@ where
 {
     type Observation = T::Observation;
     type Action = usize;
+
+    fn log_prob(&self, observation: &Self::Observation, action: &Self::Action) -> f64 {
+        self.action_probabilities(observation)[*action].ln()
+    }
 
     fn sample_action_with_log_prob(
         &self,

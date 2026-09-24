@@ -1,21 +1,21 @@
 use super::{ppo::PpoConfig, vpg::VanillaPolicyGradientConfig};
 use crate::algorithms::{ModelFreeSolver, SolveResult, SolveStatus};
+use crate::backend::{TrainingBackend, device};
 use crate::environment::{Environment, Rollout, Space};
+use crate::network::action::ActionType;
+use crate::network::actor::{Actor, CategoricalActor, GaussianActor};
+use crate::network::gradient_norm;
 use crate::network::mlp::{Activation, MlpModel};
-use crate::policy::dq::{DeepQPolicy, DeepQPolicyMode};
-use crate::reporting::{AbstractReporter, MetricAverages, Step};
+use crate::reporting::{MetricAverages, Reporter, Step};
 use crate::schedule::Schedule;
 use crate::transition_buffer::TransitionBuffer;
 use burn::{
-    backend::{Autodiff, Flex, flex::FlexDevice},
-    module::AutodiffModule,
     optim::{Adam, AdamConfig, GradientsParams, Optimizer, adaptor::OptimizerAdaptor},
-    tensor::{ElementConversion, activation::log_softmax, backend::Backend},
+    tensor::{ElementConversion, backend::Backend},
 };
 use ndarray::Array1;
 use rand::RngExt;
-
-type TrainingBackend = Autodiff<Flex>;
+use std::marker::PhantomData;
 
 #[derive(Debug, Clone, PartialEq)]
 pub(super) enum PolicyObjective {
@@ -61,11 +61,12 @@ pub(super) struct PolicyGradientConfig {
     pub(super) value_updates_per_epoch: usize,
 }
 
-pub struct PolicyGradient {
+pub struct PolicyGradient<Action = usize> {
     config: PolicyGradientConfig,
+    action: PhantomData<Action>,
 }
 
-impl PolicyGradient {
+impl PolicyGradient<usize> {
     pub fn vpg(config: VanillaPolicyGradientConfig) -> Result<Self, String> {
         Self::new(config.into())
     }
@@ -93,50 +94,41 @@ impl PolicyGradient {
         if config.policy_update_strategy.max_updates_per_epoch == 0 {
             return Err("policy updates per epoch must be positive".into());
         }
-        Ok(Self { config })
+        Ok(Self {
+            config,
+            action: PhantomData,
+        })
+    }
+
+    pub fn continuous(self) -> PolicyGradient<Array1<f64>> {
+        PolicyGradient {
+            config: self.config,
+            action: PhantomData,
+        }
     }
 }
 
-impl ModelFreeSolver for PolicyGradient {
-    type Observation = Array1<f64>;
-
-    fn solve_with_reporter(
+impl<Action> PolicyGradient<Action> {
+    fn train<A: ActionType, P: Actor<A>>(
         &self,
-        env: &mut dyn Environment<Observation = Array1<f64>, Action = usize>,
+        env: &mut dyn Environment<Observation = Array1<f64>, Action = A>,
         rng: &mut dyn rand::Rng,
-        reporter: &mut dyn AbstractReporter<Array1<f64>>,
-    ) -> Result<SolveResult<Array1<f64>>, String> {
-        let Space::Continuous { dim: n_s } = env.state_space() else {
-            return Err("Policy gradient requires a continuous state space".into());
-        };
-        let Space::Discrete { size: n_a } = env.action_space() else {
-            return Err("Policy gradient requires a discrete action space".into());
-        };
-
-        let device = FlexDevice;
-        <TrainingBackend as Backend>::seed(&device, rng.random());
-
-        let mut pi_optimizer: OptimizerAdaptor<Adam, MlpModel<TrainingBackend>, TrainingBackend> =
+        reporter: &mut Reporter<'_, Array1<f64>, A>,
+        mut pi: P,
+        n_s: usize,
+    ) -> (P::InferencePolicy, SolveStatus) {
+        let mut pi_optimizer: OptimizerAdaptor<Adam, P, TrainingBackend> = AdamConfig::new().init();
+        let mut v_optimizer: OptimizerAdaptor<Adam, MlpModel<TrainingBackend>, TrainingBackend> =
             AdamConfig::new().init();
-        let mut v_optimizer = pi_optimizer.clone();
-
-        let mut pi = MlpModel::new_with_hidden_layers(
-            n_s,
-            &self.config.hidden_dims,
-            n_a,
-            self.config.activation,
-            &device,
-        );
         let mut v = MlpModel::new_with_hidden_layers(
             n_s,
             &self.config.hidden_dims,
             1,
             self.config.activation,
-            &device,
+            device(),
         );
 
-        let mut buffer =
-            TransitionBuffer::<usize>::with_capacity(self.config.steps_per_epoch, None);
+        let mut buffer = TransitionBuffer::<A>::with_capacity(self.config.steps_per_epoch, None);
         let mut rollout = Rollout::new(env, rng);
 
         for epoch in 0..self.config.epochs {
@@ -146,12 +138,7 @@ impl ModelFreeSolver for PolicyGradient {
             let v_learning_rate = self.config.v_learning_rate.value(epoch);
 
             buffer.clear();
-            buffer.fill(
-                &mut rollout,
-                &DeepQPolicy::borrowed(&pi, DeepQPolicyMode::SoftMax),
-                rng,
-                self.config.steps_per_epoch,
-            );
+            buffer.fill(&mut rollout, &pi, rng, self.config.steps_per_epoch);
 
             let batch = buffer.tensor_data();
             let returns = batch
@@ -178,9 +165,7 @@ impl ModelFreeSolver for PolicyGradient {
             let mut policy_updates = 0;
             for update in 0..self.config.policy_update_strategy.max_updates_per_epoch {
                 // current policy log-probs
-                let log_probs = log_softmax(pi.forward(batch.s.clone()), 1)
-                    .gather(1, batch.a.clone().reshape([-1, 1]))
-                    .squeeze_dim(1);
+                let log_probs = pi.log_probs(batch.s.clone(), &batch.a);
 
                 let kl_estimate = (batch.log_probs.clone() - log_probs.clone())
                     .mean()
@@ -222,7 +207,10 @@ impl ModelFreeSolver for PolicyGradient {
 
                 let pi_grad = GradientsParams::from_grads(pi_loss.backward(), &pi);
                 update_metrics.record("pi/loss", pi_loss.into_scalar().elem::<f64>());
-                update_metrics.record("pi/grad_norm", pi.gradient_norm(&pi_grad));
+                update_metrics.record(
+                    "pi/grad_norm",
+                    gradient_norm::<TrainingBackend, _>(&pi, &pi_grad),
+                );
                 pi = pi_optimizer.step(pi_learning_rate, pi, pi_grad);
                 policy_updates += 1;
             }
@@ -236,22 +224,17 @@ impl ModelFreeSolver for PolicyGradient {
 
                 let v_grad = GradientsParams::from_grads(v_loss.backward(), &v);
                 update_metrics.record("v/loss", v_loss.into_scalar().elem::<f64>());
-                update_metrics.record("v/grad_norm", v.gradient_norm(&v_grad));
+                update_metrics.record(
+                    "v/grad_norm",
+                    gradient_norm::<TrainingBackend, _>(&v, &v_grad),
+                );
                 v = v_optimizer.step(v_learning_rate, v, v_grad);
             }
 
-            let log_probs_a = log_softmax(pi.forward(batch.s), 1);
+            let entropy = pi.entropy(batch.s.clone()).mean();
             let mut metrics = vec![
                 ("pi/lr", pi_learning_rate),
-                (
-                    "pi/entropy",
-                    (log_probs_a.clone().exp() * log_probs_a.clone())
-                        .neg()
-                        .sum_dim(1)
-                        .mean()
-                        .into_scalar()
-                        .elem::<f64>(),
-                ),
+                ("pi/entropy", entropy.mean().into_scalar().elem::<f64>()),
                 ("v/lr", v_learning_rate),
             ];
             metrics.extend(update_metrics.finish());
@@ -261,18 +244,140 @@ impl ModelFreeSolver for PolicyGradient {
             }
 
             reporter.record(step, &metrics);
-            let mut make_policy = || {
-                Box::new(DeepQPolicy::new(pi.valid(), DeepQPolicyMode::SoftMax))
-                    as Box<dyn crate::policy::DiscretePolicy<Observation = Array1<f64>>>
-            };
-            reporter.policy(step, &mut make_policy);
+            reporter.policy(step, || pi.valid());
         }
 
-        Ok(SolveResult {
-            policy: Box::new(DeepQPolicy::new(pi.valid(), DeepQPolicyMode::SoftMax)),
-            status: SolveStatus::IterationLimit {
+        (
+            pi.valid(),
+            SolveStatus::IterationLimit {
                 iterations: self.config.epochs,
             },
+        )
+    }
+}
+
+impl ModelFreeSolver for PolicyGradient {
+    type Observation = Array1<f64>;
+    type Action = usize;
+
+    fn solve_with_reporter(
+        &self,
+        env: &mut dyn Environment<Observation = Array1<f64>, Action = usize>,
+        rng: &mut dyn rand::Rng,
+        reporter: &mut Reporter<'_, Array1<f64>>,
+    ) -> Result<SolveResult<Array1<f64>>, String> {
+        let Space::Continuous { dim: n_s } = env.state_space() else {
+            return Err("Policy gradient requires a continuous state space".into());
+        };
+        let Space::Discrete { size: n_a } = env.action_space() else {
+            return Err("Policy gradient requires a discrete action space".into());
+        };
+
+        <TrainingBackend as Backend>::seed(device(), rng.random());
+        let pi = CategoricalActor::new(
+            n_s,
+            &self.config.hidden_dims,
+            n_a,
+            self.config.activation,
+            device(),
+        );
+        let (pi, status) = self.train(env, rng, reporter, pi, n_s);
+        Ok(SolveResult {
+            policy: Box::new(pi),
+            status,
         })
+    }
+}
+
+impl ModelFreeSolver for PolicyGradient<Array1<f64>> {
+    type Observation = Array1<f64>;
+    type Action = Array1<f64>;
+
+    fn solve_with_reporter(
+        &self,
+        env: &mut dyn Environment<Observation = Array1<f64>, Action = Array1<f64>>,
+        rng: &mut dyn rand::Rng,
+        reporter: &mut Reporter<'_, Array1<f64>, Array1<f64>>,
+    ) -> Result<SolveResult<Array1<f64>, Array1<f64>>, String> {
+        let Space::Continuous { dim: n_s } = env.state_space() else {
+            return Err("Policy gradient requires a continuous state space".into());
+        };
+        let Space::Continuous { dim: n_a } = env.action_space() else {
+            return Err("Policy gradient requires a continuous action space".into());
+        };
+
+        <TrainingBackend as Backend>::seed(device(), rng.random());
+        let pi = GaussianActor::new(
+            n_s,
+            &self.config.hidden_dims,
+            n_a,
+            self.config.activation,
+            device(),
+        );
+        let (pi, status) = self.train(env, rng, reporter, pi, n_s);
+        Ok(SolveResult {
+            policy: Box::new(pi),
+            status,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::environment::Step as EnvironmentStep;
+    use rand::{SeedableRng, rngs::StdRng};
+
+    struct ContinuousBandit;
+
+    impl Environment for ContinuousBandit {
+        type Observation = Array1<f64>;
+        type Action = Array1<f64>;
+
+        fn state_space(&self) -> Space {
+            Space::Continuous { dim: 1 }
+        }
+
+        fn action_space(&self) -> Space {
+            Space::Continuous { dim: 1 }
+        }
+
+        fn reset(&mut self, _rng: &mut dyn rand::Rng) -> Self::Observation {
+            Array1::zeros(1)
+        }
+
+        fn step(
+            &mut self,
+            action: Self::Action,
+            _rng: &mut dyn rand::Rng,
+        ) -> EnvironmentStep<Self::Observation> {
+            EnvironmentStep {
+                observation: Array1::zeros(1),
+                reward: -action[0] * action[0],
+                terminated: false,
+                truncated: true,
+            }
+        }
+    }
+
+    #[test]
+    fn trains_with_continuous_actions() {
+        let solver = PolicyGradient::vpg(VanillaPolicyGradientConfig {
+            hidden_dims: vec![4],
+            epochs: 1,
+            steps_per_epoch: 8,
+            value_updates_per_epoch: 1,
+            ..Default::default()
+        })
+        .unwrap()
+        .continuous();
+        let mut environment = ContinuousBandit;
+        let mut rng = StdRng::seed_from_u64(0);
+
+        let result = solver.solve(&mut environment, &mut rng).unwrap();
+        let action = result.policy.sample_action(&Array1::zeros(1), &mut rng);
+
+        assert_eq!(action.len(), 1);
+        assert!(action[0].is_finite());
     }
 }

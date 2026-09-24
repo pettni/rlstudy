@@ -1,7 +1,11 @@
 use crate::environment::{Environment, Space, Step};
 use ndarray::Array1;
-use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyTuple};
+use pyo3::{
+    IntoPyObjectExt,
+    exceptions::PyValueError,
+    prelude::*,
+    types::{PyDict, PyTuple},
+};
 use rand::RngExt;
 
 #[derive(Default)]
@@ -10,10 +14,24 @@ pub struct GymOptions {
     pub normalize_observations: bool,
 }
 
-pub struct GymEnvironment {
+pub enum GymEnvironment {
+    Discrete(DiscreteGymEnvironment),
+    Continuous(ContinuousGymEnvironment),
+}
+
+pub struct DiscreteGymEnvironment {
+    core: GymCore,
+    action_space: Space,
+}
+
+pub struct ContinuousGymEnvironment {
+    core: GymCore,
+    action_space: Space,
+}
+
+struct GymCore {
     env: Py<PyAny>,
     observation_space: Space,
-    action_space: Space,
 }
 
 impl GymEnvironment {
@@ -35,18 +53,43 @@ impl GymEnvironment {
             let observation_space = bound.getattr("observation_space")?;
             let action_space = bound.getattr("action_space")?;
 
-            let low = extract_vector(&observation_space.getattr("low")?)?;
-            let _high = extract_vector(&observation_space.getattr("high")?)?;
-            let num_actions = action_space.getattr("n")?.extract()?;
-
-            Ok(Self {
+            let observation_low = extract_vector(&observation_space.getattr("low")?)?;
+            let core = GymCore {
                 env,
-                observation_space: Space::Continuous { dim: low.len() },
-                action_space: Space::Discrete { size: num_actions },
-            })
+                observation_space: Space::Continuous {
+                    dim: observation_low.len(),
+                },
+            };
+
+            if let Ok(num_actions) = action_space
+                .getattr("n")
+                .and_then(|value| value.extract::<usize>())
+            {
+                return Ok(Self::Discrete(DiscreteGymEnvironment {
+                    core,
+                    action_space: Space::Discrete { size: num_actions },
+                }));
+            }
+
+            let action_low = extract_vector(&action_space.getattr("low")?)?;
+            let action_high = extract_vector(&action_space.getattr("high")?)?;
+            if action_low.len() != action_high.len() {
+                return Err(PyValueError::new_err(
+                    "Gym action-space bounds have different dimensions",
+                ));
+            }
+
+            Ok(Self::Continuous(ContinuousGymEnvironment {
+                core,
+                action_space: Space::Continuous {
+                    dim: action_low.len(),
+                },
+            }))
         })
     }
+}
 
+impl GymCore {
     fn reset_with_seed(&mut self, seed: u64) -> PyResult<Array1<f64>> {
         Python::attach(|py| {
             let kwargs = PyDict::new(py);
@@ -57,26 +100,24 @@ impl GymEnvironment {
         })
     }
 
-    fn try_step(&mut self, action: usize) -> PyResult<Step<Array1<f64>>> {
-        Python::attach(|py| {
-            let result = self.env.bind(py).call_method1("step", (action,))?;
-            let tuple = result.cast_into::<PyTuple>()?;
-            Ok(Step {
-                observation: extract_vector(&tuple.get_item(0)?)?,
-                reward: tuple.get_item(1)?.extract()?,
-                terminated: tuple.get_item(2)?.extract()?,
-                truncated: tuple.get_item(3)?.extract()?,
-            })
+    fn step(&mut self, action: &Bound<'_, PyAny>) -> PyResult<Step<Array1<f64>>> {
+        let result = self.env.bind(action.py()).call_method1("step", (action,))?;
+        let tuple = result.cast_into::<PyTuple>()?;
+        Ok(Step {
+            observation: extract_vector(&tuple.get_item(0)?)?,
+            reward: tuple.get_item(1)?.extract()?,
+            terminated: tuple.get_item(2)?.extract()?,
+            truncated: tuple.get_item(3)?.extract()?,
         })
     }
 }
 
-impl Environment for GymEnvironment {
+impl Environment for DiscreteGymEnvironment {
     type Observation = Array1<f64>;
     type Action = usize;
 
     fn state_space(&self) -> Space {
-        self.observation_space.clone()
+        self.core.observation_space.clone()
     }
 
     fn action_space(&self) -> Space {
@@ -84,16 +125,50 @@ impl Environment for GymEnvironment {
     }
 
     fn reset(&mut self, rng: &mut dyn rand::Rng) -> Array1<f64> {
-        self.reset_with_seed(rng.random())
+        self.core
+            .reset_with_seed(rng.random())
             .expect("Gymnasium reset failed")
     }
 
     fn step(&mut self, action: usize, _rng: &mut dyn rand::Rng) -> Step<Array1<f64>> {
-        self.try_step(action).expect("Gymnasium step failed")
+        Python::attach(|py| {
+            let action = action.into_bound_py_any(py)?;
+            self.core.step(&action)
+        })
+        .expect("Gymnasium step failed")
     }
 }
 
-impl Drop for GymEnvironment {
+impl Environment for ContinuousGymEnvironment {
+    type Observation = Array1<f64>;
+    type Action = Array1<f64>;
+
+    fn state_space(&self) -> Space {
+        self.core.observation_space.clone()
+    }
+
+    fn action_space(&self) -> Space {
+        self.action_space.clone()
+    }
+
+    fn reset(&mut self, rng: &mut dyn rand::Rng) -> Array1<f64> {
+        self.core
+            .reset_with_seed(rng.random())
+            .expect("Gymnasium reset failed")
+    }
+
+    fn step(&mut self, action: Array1<f64>, _rng: &mut dyn rand::Rng) -> Step<Array1<f64>> {
+        Python::attach(|py| {
+            let numpy = PyModule::import(py, "numpy")?;
+            let action = numpy.call_method1("asarray", (action.to_vec(),))?;
+            let action = action.call_method1("astype", (numpy.getattr("float32")?,))?;
+            self.core.step(&action)
+        })
+        .expect("Gymnasium step failed")
+    }
+}
+
+impl Drop for GymCore {
     fn drop(&mut self) {
         Python::attach(|py| {
             let _ = self.env.bind(py).call_method0("close");

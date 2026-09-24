@@ -1,10 +1,11 @@
 use super::DqnMode;
+use crate::backend::{InferenceBackend, TrainingBackend, device};
 use crate::network::loss::Loss;
 use crate::network::mlp::MlpModel;
+use crate::network::{ema, gradient_norm};
 use crate::policy::dq::{DeepQPolicy, DeepQPolicyMode};
 use crate::transition_buffer::TransitionBufferTensorData;
 use burn::{
-    backend::{Autodiff, Flex, flex::FlexDevice},
     module::AutodiffModule,
     optim::{
         Adam, AdamConfig, GradientsParams, Optimizer, adaptor::OptimizerAdaptor,
@@ -12,8 +13,6 @@ use burn::{
     },
     tensor::backend::Backend,
 };
-
-type TrainingBackend = Autodiff<Flex>;
 
 pub(super) struct DqnTrainer {
     online: MlpModel<TrainingBackend>,
@@ -31,9 +30,8 @@ impl DqnTrainer {
         mode: DqnMode,
         seed: u64,
     ) -> Self {
-        let device = FlexDevice;
-        <TrainingBackend as Backend>::seed(&device, seed);
-        let target = MlpModel::new(feature_dim, hidden_dim, num_actions, &device);
+        <TrainingBackend as Backend>::seed(device(), seed);
+        let target = MlpModel::new(feature_dim, hidden_dim, num_actions, device());
 
         Self {
             online: target.clone(),
@@ -78,7 +76,7 @@ impl DqnTrainer {
             .next()
             .expect("loss tensor has one element");
         let gradients = GradientsParams::from_grads(loss.backward(), &self.online);
-        let gradient_norm = self.online.gradient_norm(&gradients);
+        let gradient_norm = gradient_norm::<TrainingBackend, _>(&self.online, &gradients);
 
         self.online = self.optimizer.step(learning_rate, self.online, gradients);
         (self, loss_value, gradient_norm)
@@ -89,21 +87,18 @@ impl DqnTrainer {
     }
 
     pub(super) fn soft_update_target(&mut self, rate: f64) {
-        self.target = self.target.clone().soft_update(&self.online, rate);
+        self.target = ema::update::<TrainingBackend, _>(self.target.clone(), &self.online, rate);
     }
 
-    pub(super) fn policy_view(
-        &self,
-        mode: DeepQPolicyMode,
-    ) -> DeepQPolicy<TrainingBackend, &MlpModel<TrainingBackend>> {
+    pub(super) fn policy_view(&self, mode: DeepQPolicyMode) -> DeepQPolicy<'_, TrainingBackend> {
         DeepQPolicy::borrowed(&self.online, mode)
     }
 
-    pub(super) fn inference_model(&self) -> MlpModel<Flex> {
+    pub(super) fn inference_model(&self) -> MlpModel<InferenceBackend> {
         self.online.valid()
     }
 
-    pub(super) fn into_policy(self) -> DeepQPolicy {
+    pub(super) fn into_policy(self) -> DeepQPolicy<'static, InferenceBackend> {
         DeepQPolicy::new(self.online.valid(), DeepQPolicyMode::Greedy)
     }
 }

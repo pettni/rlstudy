@@ -1,7 +1,7 @@
 use crate::algorithms::{ModelFreeSolver, SolveResult, SolveStatus, validate_gamma};
 use crate::environment::{Environment, Space, Step};
 use crate::policy::{Policy, PolicyObjective, TabularPolicy};
-use crate::reporting::{AbstractReporter, Step as ReportStep};
+use crate::reporting::{Reporter, Step as ReportStep};
 use clap::{Args, ValueEnum};
 use ndarray::{Array2, ArrayView1};
 use serde::{Deserialize, Serialize};
@@ -94,12 +94,13 @@ impl TD {
 
 impl ModelFreeSolver for TD {
     type Observation = usize;
+    type Action = usize;
 
     fn solve_with_reporter(
         &self,
         env: &mut dyn Environment<Observation = usize, Action = usize>,
         rng: &mut dyn rand::Rng,
-        reporter: &mut dyn AbstractReporter<usize>,
+        reporter: &mut Reporter<'_, usize>,
     ) -> Result<SolveResult<usize>, String> {
         let Space::Discrete { size: n_s } = env.state_space() else {
             return Err("TD requires a discrete state space".into());
@@ -197,7 +198,7 @@ impl ModelFreeSolver for TD {
                     ("train/length", episode_length as f64),
                 ],
             );
-            reporter.policy(ReportStep::Episode(episode_number), &mut || {
+            reporter.policy(ReportStep::Episode(episode_number), || {
                 let policy = match self.config.variant {
                     TDVariant::QLearning => {
                         TabularPolicy::from_q(&q_sa, PolicyObjective::Deterministic)
@@ -205,7 +206,7 @@ impl ModelFreeSolver for TD {
                     }
                     TDVariant::Sarsa | TDVariant::ExpectedSarsa => pi_target.clone(),
                 };
-                Box::new(policy)
+                policy
             });
         }
 

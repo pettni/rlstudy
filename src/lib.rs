@@ -1,4 +1,5 @@
 pub mod algorithms;
+pub mod backend;
 pub mod environment;
 pub mod environments;
 pub mod evaluation;

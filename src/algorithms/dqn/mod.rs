@@ -9,7 +9,7 @@ use crate::policy::{
     dq::{DeepQPolicy, DeepQPolicyMode},
     uniform::UniformPolicy,
 };
-use crate::reporting::{AbstractReporter, Step};
+use crate::reporting::{Reporter, Step};
 pub use crate::schedule::Schedule;
 use crate::transition_buffer::TransitionBuffer;
 use clap::{Args, ValueEnum};
@@ -170,12 +170,13 @@ impl DeepQLearning {
 
 impl ModelFreeSolver for DeepQLearning {
     type Observation = Array1<f64>;
+    type Action = usize;
 
     fn solve_with_reporter(
         &self,
         env: &mut dyn Environment<Observation = Array1<f64>, Action = usize>,
         rng: &mut dyn rand::Rng,
-        reporter: &mut dyn AbstractReporter<Array1<f64>>,
+        reporter: &mut Reporter<'_, Array1<f64>>,
     ) -> Result<SolveResult<Array1<f64>>, String> {
         let Space::Discrete { size: n_a } = env.action_space() else {
             return Err("DQN requires a discrete action space".into());
@@ -261,13 +262,9 @@ impl ModelFreeSolver for DeepQLearning {
                     ("optimizer/lr", learning_rate),
                 ],
             );
-            let mut make_policy = || {
-                Box::new(DeepQPolicy::new(
-                    trainer.inference_model(),
-                    DeepQPolicyMode::Greedy,
-                )) as Box<dyn DiscretePolicy<Observation = Array1<f64>>>
-            };
-            reporter.policy(step, &mut make_policy);
+            reporter.policy(step, || {
+                DeepQPolicy::new(trainer.inference_model(), DeepQPolicyMode::Greedy)
+            });
         }
 
         Ok(SolveResult {

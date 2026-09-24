@@ -1,15 +1,16 @@
 use crate::algorithms::{ModelFreeSolver, SolveResult, SolveStatus};
+use crate::backend::{TrainingBackend, device};
 use crate::environment::{Environment, Space};
-use crate::network::mlp::MlpModel;
-use crate::policy::{
-    Policy,
-    dq::{DeepQPolicy, DeepQPolicyMode},
+use crate::network::{
+    actor::CategoricalActor,
+    gradient_norm,
+    mlp::{Activation, MlpModel},
 };
-use crate::reporting::{AbstractReporter, Step};
+use crate::policy::Policy;
+use crate::reporting::{Reporter, Step};
 use crate::schedule::Schedule;
 use burn::{
     Tensor,
-    backend::{Autodiff, Flex, flex::FlexDevice},
     module::AutodiffModule,
     optim::{Adam, AdamConfig, GradientsParams, Optimizer, adaptor::OptimizerAdaptor},
     tensor::{Int, TensorData, activation::log_softmax, backend::Backend},
@@ -18,8 +19,6 @@ use clap::Args;
 use ndarray::Array1;
 use rand::RngExt;
 use serde::{Deserialize, Serialize};
-
-type TrainingBackend = Autodiff<Flex>;
 
 #[derive(Debug, Clone, PartialEq, Args, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
@@ -106,12 +105,13 @@ impl ActorCritic {
 
 impl ModelFreeSolver for ActorCritic {
     type Observation = Array1<f64>;
+    type Action = usize;
 
     fn solve_with_reporter(
         &self,
         env: &mut dyn Environment<Observation = Array1<f64>, Action = usize>,
         rng: &mut dyn rand::Rng,
-        reporter: &mut dyn AbstractReporter<Array1<f64>>,
+        reporter: &mut Reporter<'_, Array1<f64>>,
     ) -> Result<SolveResult<Array1<f64>>, String> {
         let Space::Continuous { dim: n_s } = env.state_space() else {
             return Err("Actor-critic requires a continuous state space".into());
@@ -120,15 +120,24 @@ impl ModelFreeSolver for ActorCritic {
             return Err("Actor-critic requires a discrete action space".into());
         };
 
-        let device = FlexDevice;
-        <TrainingBackend as Backend>::seed(&device, rng.random());
+        <TrainingBackend as Backend>::seed(device(), rng.random());
 
-        let mut pi_optimizer: OptimizerAdaptor<Adam, MlpModel<TrainingBackend>, TrainingBackend> =
+        let mut pi_optimizer: OptimizerAdaptor<
+            Adam,
+            CategoricalActor<TrainingBackend>,
+            TrainingBackend,
+        > = AdamConfig::new().init();
+        let mut v_optimizer: OptimizerAdaptor<Adam, MlpModel<TrainingBackend>, TrainingBackend> =
             AdamConfig::new().init();
-        let mut v_optimizer = pi_optimizer.clone();
 
-        let mut pi = MlpModel::new(n_s, self.config.hidden_dims, n_a, &device);
-        let mut v = MlpModel::new(n_s, self.config.hidden_dims, 1, &device);
+        let mut pi = CategoricalActor::new(
+            n_s,
+            &[self.config.hidden_dims],
+            n_a,
+            Activation::Relu,
+            device(),
+        );
+        let mut v = MlpModel::new(n_s, self.config.hidden_dims, 1, device());
 
         for episode_index in 0..self.config.episodes {
             let mut state = env.reset(rng);
@@ -140,21 +149,20 @@ impl ModelFreeSolver for ActorCritic {
             let actor_learning_rate = self.config.actor_learning_rate.value(episode_index);
             let critic_learning_rate = self.config.critic_learning_rate.value(episode_index);
             for t in 0..self.config.episode_length {
-                let action =
-                    DeepQPolicy::borrowed(&pi, DeepQPolicyMode::SoftMax).sample_action(&state, rng);
+                let action = pi.sample_action(&state, rng);
                 let step = env.step(action, rng);
 
                 let st = Tensor::<TrainingBackend, 2>::from_data(
                     TensorData::new(state.to_vec(), [1, n_s]),
-                    &device,
+                    device(),
                 );
                 let at = Tensor::<TrainingBackend, 2, Int>::from_data(
                     TensorData::new(vec![action as i64], [1, 1]),
-                    &device,
+                    device(),
                 );
                 let stp = Tensor::<TrainingBackend, 2>::from_data(
                     TensorData::new(step.observation.to_vec(), [1, n_s]),
-                    &device,
+                    device(),
                 );
 
                 let live = if step.terminated { 0.0 } else { 1.0 };
@@ -166,7 +174,7 @@ impl ModelFreeSolver for ActorCritic {
                 let critic_loss = td_error.clone().square();
                 let critic_grad = GradientsParams::from_grads(critic_loss.backward(), &v);
 
-                critic_gradient_norm_sum += v.gradient_norm(&critic_grad);
+                critic_gradient_norm_sum += gradient_norm::<TrainingBackend, _>(&v, &critic_grad);
 
                 v = v_optimizer.step(critic_learning_rate, v, critic_grad);
 
@@ -176,7 +184,7 @@ impl ModelFreeSolver for ActorCritic {
                 let actor_loss = (td_error.clone().detach() * ln_pi).neg();
                 let actor_grad = GradientsParams::from_grads(actor_loss.backward(), &pi);
 
-                actor_gradient_norm_sum += pi.gradient_norm(&actor_grad);
+                actor_gradient_norm_sum += gradient_norm::<TrainingBackend, _>(&pi, &actor_grad);
 
                 pi = pi_optimizer.step(actor_learning_rate, pi, actor_grad);
 
@@ -216,15 +224,11 @@ impl ModelFreeSolver for ActorCritic {
                     ("optimizer/critic_lr", critic_learning_rate),
                 ],
             );
-            let mut make_policy = || {
-                Box::new(DeepQPolicy::new(pi.valid(), DeepQPolicyMode::SoftMax))
-                    as Box<dyn crate::policy::DiscretePolicy<Observation = Array1<f64>>>
-            };
-            reporter.policy(Step::Episode(episode_index + 1), &mut make_policy);
+            reporter.policy(Step::Episode(episode_index + 1), || pi.valid());
         }
 
         Ok(SolveResult {
-            policy: Box::new(DeepQPolicy::new(pi.valid(), DeepQPolicyMode::SoftMax)),
+            policy: Box::new(pi.valid()),
             status: SolveStatus::IterationLimit {
                 iterations: self.config.episodes,
             },
@@ -291,9 +295,11 @@ mod tests {
         let result = solver
             .solve_with_reporter(&mut environment, &mut rng, &mut reporter)
             .unwrap();
-        let probabilities = result
-            .policy
-            .action_probabilities(&Array1::from_vec(vec![0.0, 0.0]));
+        let observation = Array1::from_vec(vec![0.0, 0.0]);
+        let probabilities = Array1::from_iter(
+            (0..model.actions().len())
+                .map(|action| result.policy.log_prob(&observation, &action).exp()),
+        );
         let history = reporter.into_history();
 
         assert_eq!(history.len(), 2);

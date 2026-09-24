@@ -8,9 +8,12 @@ use ndarray::{Array1, Array2};
 use rand::{SeedableRng, rngs::StdRng};
 use rlstudy::algorithms::{ModelBasedSolver, ModelFreeSolver, SolveResult, TabularSolveResult};
 use rlstudy::environment::{Environment, FeatureEnvironment, TabularEnvironment};
-use rlstudy::environments::{GymEnvironment, GymOptions};
+use rlstudy::environments::{
+    ContinuousGymEnvironment, DiscreteGymEnvironment, GymEnvironment, GymOptions,
+};
 use rlstudy::evaluation::{EvaluationStats, fixed_policy_values};
 use rlstudy::model::TabularModel;
+use rlstudy::policy::Policy;
 use rlstudy::reporting::{HistoryRow, Reporter, ReporterConfig};
 use serde::Serialize;
 use std::path::PathBuf;
@@ -204,9 +207,9 @@ fn run_solver(
                         evaluation_seed,
                     )?
                 }
-                SelectedSystem::Gym(environment) => {
+                SelectedSystem::DiscreteGym(environment) => {
                     let mut evaluation_environment =
-                        GymEnvironment::new(gym_id.expect("Gym ID is present"), gym_options)?;
+                        discrete_gym(gym_id.expect("Gym ID is present"), gym_options)?;
                     run_model_free(
                         &solver,
                         environment,
@@ -215,6 +218,9 @@ fn run_solver(
                         reporting,
                         evaluation_seed,
                     )?
+                }
+                SelectedSystem::ContinuousGym(_) => {
+                    return Err("DQN requires a discrete action space".into());
                 }
             };
             Ok((SelectedResult::Neural(result, history), stats))
@@ -233,9 +239,9 @@ fn run_solver(
                         evaluation_seed,
                     )?
                 }
-                SelectedSystem::Gym(environment) => {
+                SelectedSystem::DiscreteGym(environment) => {
                     let mut evaluation_environment =
-                        GymEnvironment::new(gym_id.expect("Gym ID is present"), gym_options)?;
+                        discrete_gym(gym_id.expect("Gym ID is present"), gym_options)?;
                     run_model_free(
                         &solver,
                         environment,
@@ -245,38 +251,54 @@ fn run_solver(
                         evaluation_seed,
                     )?
                 }
-            };
-            Ok((SelectedResult::Neural(result, history), stats))
-        }
-        SelectedSolver::Vpg(solver) | SelectedSolver::Ppo(solver) => {
-            let (result, history, stats) = match system {
-                SelectedSystem::Model(model) => {
-                    let mut environment = FeatureEnvironment::new(model)?;
-                    let mut evaluation_environment = FeatureEnvironment::new(model)?;
-                    run_model_free(
-                        &solver,
-                        &mut environment,
-                        &mut evaluation_environment,
-                        rng,
-                        reporting,
-                        evaluation_seed,
-                    )?
-                }
-                SelectedSystem::Gym(environment) => {
-                    let mut evaluation_environment =
-                        GymEnvironment::new(gym_id.expect("Gym ID is present"), gym_options)?;
-                    run_model_free(
-                        &solver,
-                        environment,
-                        &mut evaluation_environment,
-                        rng,
-                        reporting,
-                        evaluation_seed,
-                    )?
+                SelectedSystem::ContinuousGym(_) => {
+                    return Err("REINFORCE requires a discrete action space".into());
                 }
             };
             Ok((SelectedResult::Neural(result, history), stats))
         }
+        SelectedSolver::Vpg(solver) | SelectedSolver::Ppo(solver) => match system {
+            SelectedSystem::Model(model) => {
+                let mut environment = FeatureEnvironment::new(model)?;
+                let mut evaluation_environment = FeatureEnvironment::new(model)?;
+                let (result, history, stats) = run_model_free(
+                    &solver,
+                    &mut environment,
+                    &mut evaluation_environment,
+                    rng,
+                    reporting,
+                    evaluation_seed,
+                )?;
+                Ok((SelectedResult::Neural(result, history), stats))
+            }
+            SelectedSystem::DiscreteGym(environment) => {
+                let mut evaluation_environment =
+                    discrete_gym(gym_id.expect("Gym ID is present"), gym_options)?;
+                let (result, history, stats) = run_model_free(
+                    &solver,
+                    environment,
+                    &mut evaluation_environment,
+                    rng,
+                    reporting,
+                    evaluation_seed,
+                )?;
+                Ok((SelectedResult::Neural(result, history), stats))
+            }
+            SelectedSystem::ContinuousGym(environment) => {
+                let solver = solver.continuous();
+                let mut evaluation_environment =
+                    continuous_gym(gym_id.expect("Gym ID is present"), gym_options)?;
+                let (result, history, stats) = run_model_free(
+                    &solver,
+                    environment,
+                    &mut evaluation_environment,
+                    rng,
+                    reporting,
+                    evaluation_seed,
+                )?;
+                Ok((SelectedResult::Continuous(result, history), stats))
+            }
+        },
         SelectedSolver::ActorCritic(solver) => {
             let (result, history, stats) = match system {
                 SelectedSystem::Model(model) => {
@@ -291,9 +313,9 @@ fn run_solver(
                         evaluation_seed,
                     )?
                 }
-                SelectedSystem::Gym(environment) => {
+                SelectedSystem::DiscreteGym(environment) => {
                     let mut evaluation_environment =
-                        GymEnvironment::new(gym_id.expect("Gym ID is present"), gym_options)?;
+                        discrete_gym(gym_id.expect("Gym ID is present"), gym_options)?;
                     run_model_free(
                         &solver,
                         environment,
@@ -302,6 +324,9 @@ fn run_solver(
                         reporting,
                         evaluation_seed,
                     )?
+                }
+                SelectedSystem::ContinuousGym(_) => {
+                    return Err("actor-critic requires a discrete action space".into());
                 }
             };
             Ok((SelectedResult::Neural(result, history), stats))
@@ -320,9 +345,9 @@ fn run_solver(
                         evaluation_seed,
                     )?
                 }
-                SelectedSystem::Gym(environment) => {
+                SelectedSystem::DiscreteGym(environment) => {
                     let mut evaluation_environment =
-                        GymEnvironment::new(gym_id.expect("Gym ID is present"), gym_options)?;
+                        discrete_gym(gym_id.expect("Gym ID is present"), gym_options)?;
                     run_model_free(
                         &solver,
                         environment,
@@ -332,22 +357,45 @@ fn run_solver(
                         evaluation_seed,
                     )?
                 }
+                SelectedSystem::ContinuousGym(_) => {
+                    return Err("approximate TD requires a discrete action space".into());
+                }
             };
             Ok((SelectedResult::Neural(result, history), stats))
         }
     }
 }
 
+fn discrete_gym(
+    id: &str,
+    options: &GymOptions,
+) -> Result<DiscreteGymEnvironment, Box<dyn std::error::Error>> {
+    match GymEnvironment::new(id, options)? {
+        GymEnvironment::Discrete(environment) => Ok(environment),
+        GymEnvironment::Continuous(_) => Err("expected a discrete-action Gym environment".into()),
+    }
+}
+
+fn continuous_gym(
+    id: &str,
+    options: &GymOptions,
+) -> Result<ContinuousGymEnvironment, Box<dyn std::error::Error>> {
+    match GymEnvironment::new(id, options)? {
+        GymEnvironment::Continuous(environment) => Ok(environment),
+        GymEnvironment::Discrete(_) => Err("expected a continuous-action Gym environment".into()),
+    }
+}
+
 fn run_model_free<S: ModelFreeSolver>(
     solver: &S,
-    environment: &mut dyn Environment<Observation = S::Observation, Action = usize>,
-    evaluation_environment: &mut dyn Environment<Observation = S::Observation, Action = usize>,
+    environment: &mut dyn Environment<Observation = S::Observation, Action = S::Action>,
+    evaluation_environment: &mut dyn Environment<Observation = S::Observation, Action = S::Action>,
     rng: &mut dyn rand::Rng,
     reporting: &ReporterConfig,
     evaluation_seed: u64,
 ) -> Result<
     (
-        SolveResult<S::Observation>,
+        SolveResult<S::Observation, S::Action>,
         Vec<HistoryRow>,
         EvaluationStats,
     ),
@@ -366,12 +414,15 @@ fn run_model_free<S: ModelFreeSolver>(
 enum SelectedResult {
     Tabular(TabularSolveResult, Vec<HistoryRow>),
     Neural(SolveResult<Array1<f64>>, Vec<HistoryRow>),
+    Continuous(SolveResult<Array1<f64>, Array1<f64>>, Vec<HistoryRow>),
 }
 
 impl SelectedResult {
     fn history(&self) -> &[HistoryRow] {
         match self {
-            Self::Tabular(_, history) | Self::Neural(_, history) => history,
+            Self::Tabular(_, history) | Self::Neural(_, history) | Self::Continuous(_, history) => {
+                history
+            }
         }
     }
 
@@ -379,6 +430,7 @@ impl SelectedResult {
         match self {
             Self::Tabular(result, _) => result.status,
             Self::Neural(result, _) => result.status,
+            Self::Continuous(result, _) => result.status,
         }
     }
 }
@@ -398,13 +450,18 @@ fn build_discrete_model(
     let mut probabilities = Array2::zeros((model.states().len(), model.actions().len()));
     for state in 0..model.states().len() {
         let row = match result {
-            SelectedResult::Tabular(result, _) => result.policy.action_probabilities(&state),
+            SelectedResult::Tabular(result, _) => {
+                action_probabilities(result.policy.as_ref(), &state, model.actions().len())
+            }
             SelectedResult::Neural(result, _) => {
                 let features = model
                     .state_features(state)
                     .ok_or("model state features are required for neural policies")?
                     .to_owned();
-                result.policy.action_probabilities(&features)
+                action_probabilities(result.policy.as_ref(), &features, model.actions().len())
+            }
+            SelectedResult::Continuous(_, _) => {
+                return Err("continuous policy cannot be rendered on a discrete model".into());
             }
         };
         probabilities.row_mut(state).assign(&row);
@@ -425,6 +482,14 @@ fn build_discrete_model(
         actions,
         values,
     })
+}
+
+fn action_probabilities<Observation>(
+    policy: &dyn Policy<Observation = Observation, Action = usize>,
+    observation: &Observation,
+    num_actions: usize,
+) -> Array1<f64> {
+    Array1::from_iter((0..num_actions).map(|action| policy.log_prob(observation, &action).exp()))
 }
 
 #[derive(Serialize)]

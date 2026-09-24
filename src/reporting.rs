@@ -1,6 +1,6 @@
 use crate::environment::Environment;
 use crate::evaluation::{EvaluationConfig, EvaluationStats, evaluate_rollouts};
-use crate::policy::DiscretePolicy;
+use crate::policy::Policy;
 use clap::Args;
 use rand::{SeedableRng, rngs::StdRng};
 use serde::Serialize;
@@ -89,33 +89,21 @@ pub struct HistoryRow {
     pub metrics: BTreeMap<&'static str, f64>,
 }
 
-pub trait AbstractReporter<Observation> {
-    fn progress(&mut self, step: Step, total: usize);
-
-    fn record(&mut self, step: Step, metrics: &[(&'static str, f64)]);
-
-    fn policy(
-        &mut self,
-        step: Step,
-        make_policy: &mut dyn FnMut() -> Box<dyn DiscretePolicy<Observation = Observation>>,
-    );
-}
-
-pub struct Reporter<'a, Observation> {
+pub struct Reporter<'a, Observation, Action = usize> {
     config: ReporterConfig,
     evaluation_environment:
-        Option<&'a mut dyn Environment<Observation = Observation, Action = usize>>,
+        Option<&'a mut dyn Environment<Observation = Observation, Action = Action>>,
     evaluation_rng: StdRng,
     final_evaluation_rng: StdRng,
     history: Vec<HistoryRow>,
 }
 
-impl<'a, Observation> Reporter<'a, Observation> {
+impl<'a, Observation, Action> Reporter<'a, Observation, Action> {
     pub fn new(
         config: ReporterConfig,
         seed: u64,
         evaluation_environment: Option<
-            &'a mut dyn Environment<Observation = Observation, Action = usize>,
+            &'a mut dyn Environment<Observation = Observation, Action = Action>,
         >,
     ) -> Self {
         Self {
@@ -127,10 +115,10 @@ impl<'a, Observation> Reporter<'a, Observation> {
         }
     }
 
-    pub fn final_evaluation(
-        &mut self,
-        policy: &dyn DiscretePolicy<Observation = Observation>,
-    ) -> EvaluationStats {
+    pub fn final_evaluation<P>(&mut self, policy: &P) -> EvaluationStats
+    where
+        P: Policy<Observation = Observation, Action = Action> + ?Sized,
+    {
         let environment = self
             .evaluation_environment
             .as_deref_mut()
@@ -146,10 +134,8 @@ impl<'a, Observation> Reporter<'a, Observation> {
     pub fn into_history(self) -> Vec<HistoryRow> {
         self.history
     }
-}
 
-impl<Observation> AbstractReporter<Observation> for Reporter<'_, Observation> {
-    fn progress(&mut self, step: Step, total: usize) {
+    pub fn progress(&mut self, step: Step, total: usize) {
         if !std::io::stderr().is_terminal() {
             return;
         }
@@ -162,7 +148,7 @@ impl<Observation> AbstractReporter<Observation> for Reporter<'_, Observation> {
         eprint!("\r{label} {number}/{total}");
     }
 
-    fn record(&mut self, step: Step, metrics: &[(&'static str, f64)]) {
+    pub fn record(&mut self, step: Step, metrics: &[(&'static str, f64)]) {
         let (unit, number) = step.parts();
         self.history.push(HistoryRow {
             unit,
@@ -186,11 +172,11 @@ impl<Observation> AbstractReporter<Observation> for Reporter<'_, Observation> {
         }
     }
 
-    fn policy(
-        &mut self,
-        step: Step,
-        make_policy: &mut dyn FnMut() -> Box<dyn DiscretePolicy<Observation = Observation>>,
-    ) {
+    pub fn policy<P, F>(&mut self, step: Step, mut make_policy: F)
+    where
+        P: Policy<Observation = Observation, Action = Action>,
+        F: FnMut() -> P,
+    {
         let (_, number) = step.parts();
         if !self
             .config
@@ -205,7 +191,7 @@ impl<Observation> AbstractReporter<Observation> for Reporter<'_, Observation> {
         let policy = make_policy();
         let stats = evaluate_rollouts(
             environment,
-            policy.as_ref(),
+            &policy,
             self.config.evaluation(),
             &mut self.evaluation_rng,
         );
@@ -269,9 +255,9 @@ mod tests {
         let mut calls = 0;
         for episode in 1..=2 {
             reporter.record(Step::Episode(episode), &[("train/return", episode as f64)]);
-            reporter.policy(Step::Episode(episode), &mut || {
+            reporter.policy(Step::Episode(episode), || {
                 calls += 1;
-                Box::new(TabularPolicy::uniform(1, 1).unwrap())
+                TabularPolicy::uniform(1, 1).unwrap()
             });
         }
         let history = reporter.into_history();

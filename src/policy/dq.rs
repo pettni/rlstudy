@@ -1,12 +1,13 @@
-use burn::Tensor;
-use burn::backend::{Flex, flex::FlexDevice};
-use burn::tensor::TensorData;
-use burn::tensor::backend::Backend;
+use std::borrow::Cow;
+
+use burn::tensor::{Tensor, TensorData, backend::Backend};
 use ndarray::Array1;
-use std::{borrow::Borrow, marker::PhantomData};
 
 use super::DiscretePolicy;
-use crate::network::mlp::MlpModel;
+use crate::{
+    backend::{Device, device},
+    network::mlp::MlpModel,
+};
 
 #[derive(Debug, Clone, Copy)]
 pub enum DeepQPolicyMode {
@@ -16,54 +17,42 @@ pub enum DeepQPolicyMode {
 }
 
 #[derive(Debug, Clone)]
-pub struct DeepQPolicy<B = Flex, N = MlpModel<B>>
-where
-    B: Backend<Device = FlexDevice>,
-{
-    q_network: N, // f(s) s.t. q(s, a) = f(s)[a]
+pub struct DeepQPolicy<'a, B: Backend> {
+    q_network: Cow<'a, MlpModel<B>>, // f(s) s.t. q(s, a) = f(s)[a]
     mode: DeepQPolicyMode,
-    backend: PhantomData<B>,
 }
 
-impl DeepQPolicy {
-    pub fn new(q_network: MlpModel<Flex>, mode: DeepQPolicyMode) -> Self {
+impl<B: Backend> DeepQPolicy<'static, B> {
+    pub fn new(q_network: MlpModel<B>, mode: DeepQPolicyMode) -> Self {
         Self {
-            q_network,
+            q_network: Cow::Owned(q_network),
             mode,
-            backend: PhantomData,
         }
     }
 }
 
-impl<'a, B> DeepQPolicy<B, &'a MlpModel<B>>
-where
-    B: Backend<Device = FlexDevice>,
-{
+impl<'a, B: Backend> DeepQPolicy<'a, B> {
     pub fn borrowed(q_network: &'a MlpModel<B>, mode: DeepQPolicyMode) -> Self {
         Self {
-            q_network,
+            q_network: Cow::Borrowed(q_network),
             mode,
-            backend: PhantomData,
         }
     }
 }
 
-impl<B, N> DiscretePolicy for DeepQPolicy<B, N>
+impl<B> DiscretePolicy for DeepQPolicy<'_, B>
 where
-    B: Backend<Device = FlexDevice>,
-    N: Borrow<MlpModel<B>>,
+    B: Backend<Device = Device>,
 {
     type Observation = Array1<f64>;
 
     fn action_probabilities(&self, observation: &Array1<f64>) -> Array1<f64> {
-        let device = FlexDevice;
         let observation = Tensor::<B, 2>::from_data(
             TensorData::new(observation.to_vec(), [1, observation.len()]),
-            &device,
+            device(),
         );
-        let q_a: Array1<f64> = Array1::from_iter(
+        let q_a = Array1::from_iter(
             self.q_network
-                .borrow()
                 .forward(observation)
                 .squeeze_dim::<1>(0)
                 .into_data()
@@ -101,11 +90,15 @@ fn greedy_action(q_a: &Array1<f64>) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::backend::{InferenceBackend, device};
+    use crate::network::mlp::MlpModel;
 
     #[test]
     fn action_probabilities_are_a_distribution() {
-        let device = FlexDevice;
-        let policy = DeepQPolicy::new(MlpModel::new(2, 4, 3, &device), DeepQPolicyMode::SoftMax);
+        let policy = DeepQPolicy::new(
+            MlpModel::<InferenceBackend>::new(2, 4, 3, device()),
+            DeepQPolicyMode::SoftMax,
+        );
 
         let probabilities = policy.action_probabilities(&Array1::from_vec(vec![1.0, 2.0]));
 
@@ -116,8 +109,7 @@ mod tests {
 
     #[test]
     fn greedy_modes_are_distributions() {
-        let device = FlexDevice;
-        let network = MlpModel::new(2, 4, 3, &device);
+        let network = MlpModel::<InferenceBackend>::new(2, 4, 3, device());
         let observation = Array1::from_vec(vec![1.0, 2.0]);
         let greedy = DeepQPolicy::new(network.clone(), DeepQPolicyMode::Greedy)
             .action_probabilities(&observation);

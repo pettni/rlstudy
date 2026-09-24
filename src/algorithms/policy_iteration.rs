@@ -1,7 +1,7 @@
 use crate::algorithms::{ModelBasedSolver, SolveResult, SolveStatus, validate_gamma};
 use crate::model::TabularModel;
 use crate::policy::TabularPolicy;
-use crate::reporting::{AbstractReporter, Step};
+use crate::reporting::{Reporter, Step};
 use clap::Args;
 use ndarray::{Array1, Array2, Array3};
 use num_traits::abs;
@@ -182,7 +182,7 @@ impl ModelBasedSolver for TruncatedPolicyIteration {
     fn solve_with_reporter(
         &self,
         model: &TabularModel,
-        reporter: &mut dyn AbstractReporter<usize>,
+        reporter: &mut Reporter<'_, usize>,
     ) -> Result<SolveResult<usize>, String> {
         let n_s = model.states().len();
         let n_a = model.actions().len();
@@ -217,7 +217,7 @@ impl ModelBasedSolver for TruncatedPolicyIteration {
                     ("value/iters", v_pi_iters as f64),
                 ],
             );
-            reporter.policy(Step::Iteration(iter), &mut || Box::new(pi.clone()));
+            reporter.policy(Step::Iteration(iter), || pi.clone());
 
             if let Some(status) = status {
                 return Ok(SolveResult {

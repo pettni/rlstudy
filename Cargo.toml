@@ -5,6 +5,9 @@ edition = "2024"
 description = "A small study crate for data types and algorithms"
 license = "MIT"
 
+[features]
+cuda = ["burn/cuda"]
+
 [dependencies]
 burn = { version = "0.21.0", default-features = false, features = ["autodiff", "flex", "std"] }
 clap = { version = "4.6.6", features = ["derive"] }

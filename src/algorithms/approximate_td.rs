@@ -1,17 +1,17 @@
 use std::collections::VecDeque;
 
 use crate::algorithms::{ModelFreeSolver, SolveResult, SolveStatus};
+use crate::backend::{TrainingBackend, device};
 use crate::environment::{Environment, Space};
-use crate::network::mlp::MlpModel;
+use crate::network::{gradient_norm, mlp::MlpModel};
 use crate::policy::{
     Policy,
     dq::{DeepQPolicy, DeepQPolicyMode},
 };
-use crate::reporting::{AbstractReporter, Step};
+use crate::reporting::{Reporter, Step};
 use crate::schedule::Schedule;
 use burn::{
     Tensor,
-    backend::{Autodiff, Flex, flex::FlexDevice},
     module::AutodiffModule,
     optim::{Adam, AdamConfig, GradientsParams, Optimizer, adaptor::OptimizerAdaptor},
     tensor::{Int, TensorData, backend::Backend},
@@ -20,8 +20,6 @@ use clap::Args;
 use ndarray::Array1;
 use rand::RngExt;
 use serde::{Deserialize, Serialize};
-
-type TrainingBackend = Autodiff<Flex>;
 
 #[derive(Debug, Clone, PartialEq, Args, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
@@ -94,12 +92,13 @@ impl ApproximateTD {
 
 impl ModelFreeSolver for ApproximateTD {
     type Observation = Array1<f64>;
+    type Action = usize;
 
     fn solve_with_reporter(
         &self,
         env: &mut dyn Environment<Observation = Array1<f64>, Action = usize>,
         rng: &mut dyn rand::Rng,
-        reporter: &mut dyn AbstractReporter<Array1<f64>>,
+        reporter: &mut Reporter<'_, Array1<f64>>,
     ) -> Result<SolveResult<Array1<f64>>, String> {
         let Space::Continuous { dim: n_s } = env.state_space() else {
             return Err("Approximate TD requires a continuous state space".into());
@@ -108,14 +107,13 @@ impl ModelFreeSolver for ApproximateTD {
             return Err("Approximate TD requires a discrete action space".into());
         };
 
-        let device = FlexDevice;
-        <TrainingBackend as Backend>::seed(&device, rng.random());
+        <TrainingBackend as Backend>::seed(device(), rng.random());
 
         let mut optimizer: OptimizerAdaptor<Adam, MlpModel<TrainingBackend>, TrainingBackend> =
             AdamConfig::new().init();
 
         // q(s) = logits over actions
-        let mut q = MlpModel::new(n_s, self.config.hidden_dims, n_a, &device);
+        let mut q = MlpModel::new(n_s, self.config.hidden_dims, n_a, device());
 
         for episode_index in 0..self.config.episodes {
             let mut state = env.reset(rng);
@@ -176,11 +174,11 @@ impl ModelFreeSolver for ApproximateTD {
                     let (old_state, old_action, _) = pending.front().unwrap();
                     let t_s_old = Tensor::<TrainingBackend, 2>::from_data(
                         TensorData::new(old_state.to_vec(), [1, n_s]),
-                        &device,
+                        device(),
                     );
                     let t_a_old = Tensor::<TrainingBackend, 2, Int>::from_data(
                         TensorData::new(vec![*old_action as i64], [1, 1]),
-                        &device,
+                        device(),
                     );
 
                     // g = n-step return + bootstrap tail
@@ -194,17 +192,17 @@ impl ModelFreeSolver for ApproximateTD {
                     let bootstrap_tail = if let Some((next_state, next_action)) = &bootstrap {
                         let t_s_new = Tensor::<TrainingBackend, 2>::from_data(
                             TensorData::new(next_state.to_vec(), [1, n_s]),
-                            &device,
+                            device(),
                         );
                         let t_a_new = Tensor::<TrainingBackend, 2, Int>::from_data(
                             TensorData::new(vec![*next_action as i64], [1, 1]),
-                            &device,
+                            device(),
                         );
                         let q_bootstrap = q.forward(t_s_new).gather(1, t_a_new);
 
                         self.config.gamma.powi(pending.len() as i32) * q_bootstrap
                     } else {
-                        Tensor::<TrainingBackend, 2>::zeros([1, 1], &device)
+                        Tensor::<TrainingBackend, 2>::zeros([1, 1], device())
                     };
 
                     // optimize td error
@@ -219,7 +217,7 @@ impl ModelFreeSolver for ApproximateTD {
                         .next()
                         .expect("loss tensor has one element");
                     let grad = GradientsParams::from_grads(loss.backward(), &q);
-                    episode_gradient_norm += q.gradient_norm(&grad);
+                    episode_gradient_norm += gradient_norm::<TrainingBackend, _>(&q, &grad);
                     q = optimizer.step(learning_rate, q, grad);
                     pending.pop_front();
                 }
@@ -239,11 +237,9 @@ impl ModelFreeSolver for ApproximateTD {
                     ("optimizer/lr", learning_rate),
                 ],
             );
-            let mut make_policy = || {
-                Box::new(DeepQPolicy::new(q.valid(), DeepQPolicyMode::Greedy))
-                    as Box<dyn crate::policy::DiscretePolicy<Observation = Array1<f64>>>
-            };
-            reporter.policy(step, &mut make_policy);
+            reporter.policy(step, || {
+                DeepQPolicy::new(q.valid(), DeepQPolicyMode::Greedy)
+            });
         }
 
         Ok(SolveResult {

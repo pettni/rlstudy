@@ -1,13 +1,16 @@
 use crate::algorithms::{ModelFreeSolver, SolveResult, SolveStatus};
+use crate::backend::{TrainingBackend, device};
 use crate::environment::{Environment, Rollout, Space};
-use crate::network::mlp::MlpModel;
-use crate::policy::dq::{DeepQPolicy, DeepQPolicyMode};
-use crate::reporting::{AbstractReporter, Step};
+use crate::network::{
+    actor::CategoricalActor,
+    gradient_norm,
+    mlp::{Activation, MlpModel},
+};
+use crate::reporting::{Reporter, Step};
 use crate::schedule::Schedule;
 use crate::transition_buffer::TransitionBuffer;
 use burn::grad_clipping::GradientClippingConfig;
 use burn::{
-    backend::{Autodiff, Flex, flex::FlexDevice},
     module::AutodiffModule,
     optim::{Adam, AdamConfig, GradientsParams, Optimizer, adaptor::OptimizerAdaptor},
     tensor::{activation::log_softmax, backend::Backend},
@@ -16,8 +19,6 @@ use clap::{Args, ValueEnum};
 use ndarray::Array1;
 use rand::RngExt;
 use serde::{Deserialize, Serialize};
-
-type TrainingBackend = Autodiff<Flex>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -86,12 +87,13 @@ impl Reinforce {
 
 impl ModelFreeSolver for Reinforce {
     type Observation = Array1<f64>;
+    type Action = usize;
 
     fn solve_with_reporter(
         &self,
         env: &mut dyn Environment<Observation = Array1<f64>, Action = usize>,
         rng: &mut dyn rand::Rng,
-        reporter: &mut dyn AbstractReporter<Array1<f64>>,
+        reporter: &mut Reporter<'_, Array1<f64>>,
     ) -> Result<SolveResult<Array1<f64>>, String> {
         let Space::Continuous { dim: n_s } = env.state_space() else {
             return Err("Policy gradient requires a continuous state space".into());
@@ -100,30 +102,39 @@ impl ModelFreeSolver for Reinforce {
             return Err("Policy gradient requires a discrete action space".into());
         };
 
-        let device = FlexDevice;
-        <TrainingBackend as Backend>::seed(&device, rng.random());
+        <TrainingBackend as Backend>::seed(device(), rng.random());
 
-        let mut pi_optimizer: OptimizerAdaptor<Adam, MlpModel<TrainingBackend>, TrainingBackend> =
+        let gradient_clipping = self
+            .config
+            .gradient_clip_value
+            .map(GradientClippingConfig::Norm);
+        let mut pi_optimizer: OptimizerAdaptor<
+            Adam,
+            CategoricalActor<TrainingBackend>,
+            TrainingBackend,
+        > = AdamConfig::new()
+            .with_grad_clipping(gradient_clipping.clone())
+            .init();
+        let mut v_optimizer: OptimizerAdaptor<Adam, MlpModel<TrainingBackend>, TrainingBackend> =
             AdamConfig::new()
-                .with_grad_clipping(
-                    self.config
-                        .gradient_clip_value
-                        .map(GradientClippingConfig::Norm),
-                )
+                .with_grad_clipping(gradient_clipping)
                 .init();
 
-        let mut v_optimizer = pi_optimizer.clone();
-
-        let mut pi = MlpModel::new(n_s, self.config.hidden_dims, n_a, &device);
-        let mut v = MlpModel::new(n_s, self.config.hidden_dims, 1, &device);
+        let mut pi = CategoricalActor::new(
+            n_s,
+            &[self.config.hidden_dims],
+            n_a,
+            Activation::Relu,
+            device(),
+        );
+        let mut v = MlpModel::new(n_s, self.config.hidden_dims, 1, device());
         let mut buffer = TransitionBuffer::<usize>::with_capacity(self.config.episode_length, None);
 
         for episode_index in 0..self.config.episodes {
             buffer.clear();
-            let policy = DeepQPolicy::borrowed(&pi, DeepQPolicyMode::SoftMax);
             let mut rollout = Rollout::new(env, rng);
             for _ in 0..self.config.episode_length {
-                let transition = buffer.fill_one(&mut rollout, &policy, rng);
+                let transition = buffer.fill_one(&mut rollout, &pi, rng);
                 if transition.terminated || transition.truncated {
                     break;
                 }
@@ -153,7 +164,7 @@ impl ModelFreeSolver for Reinforce {
             let grad_pi = GradientsParams::from_grads(pi_loss.backward(), &pi);
 
             // observability
-            let gradient_norm = pi.gradient_norm(&grad_pi);
+            let gradient_norm = gradient_norm::<TrainingBackend, _>(&pi, &grad_pi);
             let learning_rate = self.config.learning_rate.value(episode_index);
 
             pi = pi_optimizer.step(learning_rate, pi, grad_pi);
@@ -209,15 +220,11 @@ impl ModelFreeSolver for Reinforce {
                     ("optimizer/lr", learning_rate),
                 ],
             );
-            let mut make_policy = || {
-                Box::new(DeepQPolicy::new(pi.valid(), DeepQPolicyMode::SoftMax))
-                    as Box<dyn crate::policy::DiscretePolicy<Observation = Array1<f64>>>
-            };
-            reporter.policy(Step::Episode(episode_index + 1), &mut make_policy);
+            reporter.policy(Step::Episode(episode_index + 1), || pi.valid());
         }
 
         Ok(SolveResult {
-            policy: Box::new(DeepQPolicy::new(pi.valid(), DeepQPolicyMode::SoftMax)),
+            policy: Box::new(pi.valid()),
             status: SolveStatus::IterationLimit {
                 iterations: self.config.episodes,
             },
@@ -258,9 +265,11 @@ mod tests {
         let result = solver
             .solve_with_reporter(&mut environment, &mut rng, &mut reporter)
             .unwrap();
-        let probabilities = result
-            .policy
-            .action_probabilities(&Array1::from_vec(vec![0.0, 0.0]));
+        let observation = Array1::from_vec(vec![0.0, 0.0]);
+        let probabilities = Array1::from_iter(
+            (0..model.actions().len())
+                .map(|action| result.policy.log_prob(&observation, &action).exp()),
+        );
         let history = reporter.into_history();
 
         assert_eq!(history.len(), 2);

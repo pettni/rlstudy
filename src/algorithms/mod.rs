@@ -1,7 +1,7 @@
 use crate::environment::Environment;
 use crate::model::TabularModel;
-use crate::policy::DiscretePolicy;
-use crate::reporting::{AbstractReporter, Reporter, ReporterConfig};
+use crate::policy::Policy;
+use crate::reporting::{Reporter, ReporterConfig};
 
 pub mod actor_critic;
 pub mod approximate_td;
@@ -30,7 +30,7 @@ pub trait ModelBasedSolver {
     fn solve_with_reporter(
         &self,
         model: &TabularModel,
-        reporter: &mut dyn AbstractReporter<Self::Observation>,
+        reporter: &mut Reporter<'_, Self::Observation>,
     ) -> Result<SolveResult<Self::Observation>, String>;
 
     fn solve(&self, model: &TabularModel) -> Result<SolveResult<Self::Observation>, String> {
@@ -41,26 +41,27 @@ pub trait ModelBasedSolver {
 
 pub trait ModelFreeSolver {
     type Observation;
+    type Action;
 
     fn solve_with_reporter(
         &self,
-        env: &mut dyn Environment<Observation = Self::Observation, Action = usize>,
+        env: &mut dyn Environment<Observation = Self::Observation, Action = Self::Action>,
         rng: &mut dyn rand::Rng,
-        reporter: &mut dyn AbstractReporter<Self::Observation>,
-    ) -> Result<SolveResult<Self::Observation>, String>;
+        reporter: &mut Reporter<'_, Self::Observation, Self::Action>,
+    ) -> Result<SolveResult<Self::Observation, Self::Action>, String>;
 
     fn solve(
         &self,
-        env: &mut dyn Environment<Observation = Self::Observation, Action = usize>,
+        env: &mut dyn Environment<Observation = Self::Observation, Action = Self::Action>,
         rng: &mut dyn rand::Rng,
-    ) -> Result<SolveResult<Self::Observation>, String> {
+    ) -> Result<SolveResult<Self::Observation, Self::Action>, String> {
         let mut reporter = Reporter::new(ReporterConfig::default(), 0, None);
         self.solve_with_reporter(env, rng, &mut reporter)
     }
 }
 
-pub struct SolveResult<Observation> {
-    pub policy: Box<dyn DiscretePolicy<Observation = Observation>>,
+pub struct SolveResult<Observation, Action = usize> {
+    pub policy: Box<dyn Policy<Observation = Observation, Action = Action>>,
     pub status: SolveStatus,
 }
 
