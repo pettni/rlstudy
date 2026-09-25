@@ -1,10 +1,13 @@
 mode: dqn
 gamma: 0.9
-learning_rate:
-  type: linear
-  initial: 0.05
-  final_value: 0.001
-  steps: 5000
+q_network:
+  learning_rate:
+    type: linear
+    initial: 0.05
+    final_value: 0.001
+    steps: 5000
+  hidden_dims: [100]
+  activation: relu
 batch_size: 512
 replay_capacity: 10000
 warm_up_transitions: 1024
@@ -16,4 +19,3 @@ epsilon_schedule:
 target_update:
   type: soft
   rate: 0.005
-hidden_dims: 100

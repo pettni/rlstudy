@@ -3,12 +3,14 @@ pub mod actor;
 pub mod ema;
 pub mod loss;
 pub mod mlp;
+mod settings;
 use crate::backend::{InferenceBackend, TrainingBackend};
 use burn::{
     module::{Module, ModuleVisitor, Param},
     optim::GradientsParams,
     tensor::Tensor,
 };
+pub use settings::MlpSettings;
 
 pub fn gradient_norm<M>(module: &M, gradients: &GradientsParams) -> f64
 where

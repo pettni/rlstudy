@@ -2,11 +2,13 @@ n: 4
 gamma: 0.99
 epsilon: 0.3
 reward_scale: 0.01
-learning_rate:
-  type: linear
-  initial: 0.0003
-  final_value: 0.00001
-  steps: 1499
-hidden_dims: 64
+q_network:
+  learning_rate:
+    type: linear
+    initial: 0.0003
+    final_value: 0.00001
+    steps: 1499
+  hidden_dims: [64]
+  activation: relu
 episodes: 1500
 episode_length: 1000

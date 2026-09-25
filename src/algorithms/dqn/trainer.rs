@@ -1,7 +1,7 @@
 use super::DqnMode;
 use crate::backend::{InferenceBackend, TrainingBackend, device};
 use crate::network::loss::Loss;
-use crate::network::mlp::MlpModel;
+use crate::network::mlp::{Activation, MlpModel};
 use crate::network::{ema, gradient_norm};
 use crate::policy::dq::{DeepQPolicy, DeepQPolicyMode};
 use crate::transition_buffer::TransitionBufferTensorData;
@@ -24,14 +24,21 @@ pub(super) struct DqnTrainer {
 impl DqnTrainer {
     pub(super) fn new(
         feature_dim: usize,
-        hidden_dim: usize,
+        hidden_dims: &[usize],
+        activation: Activation,
         num_actions: usize,
         gradient_clip_value: Option<f32>,
         mode: DqnMode,
         seed: u64,
     ) -> Self {
         <TrainingBackend as Backend>::seed(device(), seed);
-        let target = MlpModel::new(feature_dim, hidden_dim, num_actions, device());
+        let target = MlpModel::new_with_hidden_layers(
+            feature_dim,
+            hidden_dims,
+            num_actions,
+            activation,
+            device(),
+        );
 
         Self {
             online: target.clone(),
@@ -110,7 +117,7 @@ mod tests {
 
     #[test]
     fn configures_gradient_value_clipping() {
-        let trainer = DqnTrainer::new(4, 64, 2, Some(100.0), DqnMode::Dqn, 42);
+        let trainer = DqnTrainer::new(4, &[64], Activation::Relu, 2, Some(100.0), DqnMode::Dqn, 42);
 
         assert!(matches!(
             trainer.optimizer.grad_clipping(),

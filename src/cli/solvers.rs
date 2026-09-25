@@ -1,9 +1,9 @@
 use clap::Subcommand;
 use rlstudy::algorithms::{
-    ActorCritic, ActorCriticConfig, ApproximateTD, ApproximateTDConfig, DeepQLearning, DqnArgs,
-    MonteCarlo, MonteCarloConfig, PolicyGradient, PolicyIterationConfig, PpoConfig, Reinforce,
-    ReinforceConfig, TD, TDConfig, TruncatedPolicyIteration, TruncatedPolicyIterationConfig,
-    ValueIterationConfig, VanillaPolicyGradientConfig,
+    ActorCritic, ActorCriticConfig, ApproximateTD, ApproximateTDArgs, DDPG, DDPGConfig, DdpgArgs,
+    DeepQLearning, DqnArgs, MonteCarlo, MonteCarloConfig, PolicyGradient, PolicyIterationConfig,
+    PpoConfig, Reinforce, ReinforceConfig, TD, TDConfig, TruncatedPolicyIteration,
+    TruncatedPolicyIterationConfig, ValueIterationConfig, VanillaPolicyGradientConfig,
 };
 use serde::{Serialize, de::DeserializeOwned};
 use std::{fs, path::Path};
@@ -16,11 +16,12 @@ pub(super) enum Solver {
     MC(MonteCarloConfig),
     TD(TDConfig),
     Dqn(DqnArgs),
+    Ddpg(DdpgArgs),
     Reinforce(ReinforceConfig),
     Vpg(VanillaPolicyGradientConfig),
     Ppo(PpoConfig),
     ActorCritic(ActorCriticConfig),
-    ApproximateTD(ApproximateTDConfig),
+    ApproximateTD(ApproximateTDArgs),
 }
 
 impl Solver {
@@ -32,6 +33,7 @@ impl Solver {
             Self::MC(_) => "mc",
             Self::TD(_) => "td",
             Self::Dqn(_) => "dqn",
+            Self::Ddpg(_) => "ddpg",
             Self::Reinforce(_) => "reinforce",
             Self::Vpg(_) => "vpg",
             Self::Ppo(_) => "ppo",
@@ -46,6 +48,7 @@ pub(super) enum SelectedSolver {
     MonteCarlo(MonteCarlo),
     TD(TD),
     Dqn(DeepQLearning),
+    Ddpg(DDPG),
     Reinforce(Reinforce),
     Vpg(PolicyGradient),
     Ppo(PolicyGradient),
@@ -98,6 +101,14 @@ pub(super) fn build_solver(
             let parameters = serde_json::to_value(&config)?;
             Ok((SelectedSolver::Dqn(DeepQLearning::new(config)?), parameters))
         }
+        Solver::Ddpg(args) => {
+            let config: DDPGConfig = match config_path {
+                Some(path) => read_config(path)?,
+                None => args.clone().into(),
+            };
+            let parameters = serde_json::to_value(&config)?;
+            Ok((SelectedSolver::Ddpg(DDPG::new(config)?), parameters))
+        }
         Solver::Reinforce(config) => {
             let (config, parameters) = resolve_config(config, config_path)?;
             Ok((
@@ -126,8 +137,12 @@ pub(super) fn build_solver(
                 parameters,
             ))
         }
-        Solver::ApproximateTD(config) => {
-            let (config, parameters) = resolve_config(config, config_path)?;
+        Solver::ApproximateTD(args) => {
+            let config = match config_path {
+                Some(path) => read_config(path)?,
+                None => args.clone().into(),
+            };
+            let parameters = serde_json::to_value(&config)?;
             Ok((
                 SelectedSolver::ApproximateTD(ApproximateTD::new(config)?),
                 parameters,
@@ -166,17 +181,19 @@ where
 #[cfg(test)]
 mod tests {
     use rlstudy::algorithms::{
-        ActorCriticConfig, ApproximateTDConfig, DqnConfig, PpoConfig, ReinforceConfig,
+        ActorCriticConfig, ApproximateTDConfig, DDPGConfig, DqnConfig, PpoConfig, ReinforceConfig,
         VanillaPolicyGradientConfig,
     };
 
     #[test]
     fn dqn_yaml_uses_defaults_for_missing_fields() {
-        let config: DqnConfig =
-            yaml_serde::from_str("learning_rate:\n  type: constant\n  value: 0.1").unwrap();
+        let config: DqnConfig = yaml_serde::from_str(
+            "q_network:\n  learning_rate:\n    type: constant\n    value: 0.1",
+        )
+        .unwrap();
 
         assert_eq!(
-            config.learning_rate,
+            config.q_network.learning_rate,
             rlstudy::algorithms::Schedule::Constant { value: 0.1 }
         );
         assert_eq!(config.replay_capacity, 1_000);
@@ -192,6 +209,17 @@ mod tests {
             config.target_update,
             rlstudy::algorithms::TargetUpdateConfig::Soft { rate: 0.01 }
         );
+    }
+
+    #[test]
+    fn checked_in_dqn_configs_parse() {
+        for contents in [
+            include_str!("../../settings/dqn_for_5x5.yaml"),
+            include_str!("../../settings/dqn_for_cartpole.yaml"),
+        ] {
+            let config: DqnConfig = yaml_serde::from_str(contents).unwrap();
+            assert!(rlstudy::algorithms::DeepQLearning::new(config).is_ok());
+        }
     }
 
     #[test]
@@ -236,5 +264,14 @@ mod tests {
         .unwrap();
 
         assert!(rlstudy::algorithms::ApproximateTD::new(config).is_ok());
+    }
+
+    #[test]
+    fn checked_in_ddpg_config_parses() {
+        let config: DDPGConfig =
+            yaml_serde::from_str(include_str!("../../settings/ddpg_for_half_cheetah.yaml"))
+                .unwrap();
+
+        assert!(rlstudy::algorithms::DDPG::new(config).is_ok());
     }
 }

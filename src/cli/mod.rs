@@ -225,6 +225,22 @@ fn run_solver(
             };
             Ok((SelectedResult::Neural(result, history), stats))
         }
+        SelectedSolver::Ddpg(solver) => {
+            let SelectedSystem::ContinuousGym(environment) = system else {
+                return Err("DDPG requires a continuous-action Gym environment".into());
+            };
+            let mut evaluation_environment =
+                continuous_gym(gym_id.expect("Gym ID is present"), gym_options)?;
+            let (result, history, stats) = run_model_free(
+                &solver,
+                environment,
+                &mut evaluation_environment,
+                rng,
+                reporting,
+                evaluation_seed,
+            )?;
+            Ok((SelectedResult::Continuous(result, history), stats))
+        }
         SelectedSolver::Reinforce(solver) => {
             let (result, history, stats) = match system {
                 SelectedSystem::Model(model) => {
@@ -519,7 +535,7 @@ struct VisualizationResult<'a> {
 mod tests {
     use super::*;
     use rlstudy::algorithms::{
-        ActorCriticConfig, ApproximateTDConfig, DqnConfig, MonteCarloConfig, PpoConfig,
+        ActorCriticConfig, ApproximateTDConfig, DDPGConfig, DqnConfig, MonteCarloConfig, PpoConfig,
         ReinforceConfig, TDConfig, ValueIterationConfig, VanillaPolicyGradientConfig,
     };
 
@@ -556,6 +572,11 @@ mod tests {
         };
         let config: DqnConfig = config.into();
         assert_eq!(config, yaml_serde::from_str::<DqnConfig>("{}").unwrap());
+        let Solver::Ddpg(config) = solver(&["solve", "ddpg"]) else {
+            unreachable!()
+        };
+        let config: DDPGConfig = config.into();
+        assert_eq!(config, yaml_serde::from_str::<DDPGConfig>("{}").unwrap());
         let Solver::Reinforce(config) = solver(&["solve", "reinforce"]) else {
             unreachable!()
         };
@@ -584,6 +605,7 @@ mod tests {
         let Solver::ApproximateTD(config) = solver(&["solve", "approximate-td"]) else {
             unreachable!()
         };
+        let config: ApproximateTDConfig = config.into();
         assert_eq!(
             config,
             yaml_serde::from_str::<ApproximateTDConfig>("{}").unwrap()

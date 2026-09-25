@@ -2,8 +2,8 @@ use crate::algorithms::{ModelFreeSolver, SolveResult, SolveStatus};
 use crate::backend::{TrainingBackend, device};
 use crate::environment::{Environment, Rollout};
 use crate::network::{
-    ema,
-    mlp::{MlpModel, MlpSettings, OutputTransform},
+    MlpSettings, ema,
+    mlp::{Activation, MlpModel, OutputTransform},
 };
 use crate::policy::deterministic::DeterministicPolicy;
 use crate::policy::uniform::UniformContinuousPolicy;
@@ -14,9 +14,12 @@ use burn::{
     optim::{Adam, AdamConfig, GradientsParams, Optimizer, adaptor::OptimizerAdaptor},
     tensor::{ElementConversion, Tensor},
 };
+use clap::Args;
 use ndarray::Array1;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct DDPGConfig {
     pub gamma: f64,
     pub batch_size: usize,
@@ -45,6 +48,73 @@ impl Default for DDPGConfig {
             ema_rate: 0.01,
             q_network: MlpSettings::default(),
             pi_network: MlpSettings::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Args)]
+pub struct DdpgArgs {
+    #[arg(long, default_value_t = DDPGConfig::default().gamma)]
+    gamma: f64,
+    #[arg(long, default_value_t = DDPGConfig::default().batch_size)]
+    batch_size: usize,
+    #[arg(long, default_value_t = DDPGConfig::default().replay_capacity)]
+    replay_capacity: usize,
+    #[arg(long, default_value_t = DDPGConfig::default().warm_up_transitions)]
+    warm_up_transitions: usize,
+    #[arg(long, default_value_t = DDPGConfig::default().steps_per_iteration)]
+    steps_per_iteration: usize,
+    #[arg(long, default_value_t = DDPGConfig::default().updates_per_iteration)]
+    updates_per_iteration: usize,
+    #[arg(long)]
+    exploration_noise: Option<f64>,
+    #[arg(long, default_value_t = DDPGConfig::default().iterations)]
+    iterations: usize,
+    #[arg(long, default_value_t = DDPGConfig::default().ema_rate)]
+    ema_rate: f64,
+    #[arg(long)]
+    q_learning_rate: Option<crate::schedule::Schedule>,
+    #[arg(long, value_delimiter = ',')]
+    q_hidden_dims: Option<Vec<usize>>,
+    #[arg(long, value_enum)]
+    q_activation: Option<Activation>,
+    #[arg(long)]
+    pi_learning_rate: Option<crate::schedule::Schedule>,
+    #[arg(long, value_delimiter = ',')]
+    pi_hidden_dims: Option<Vec<usize>>,
+    #[arg(long, value_enum)]
+    pi_activation: Option<Activation>,
+}
+
+impl From<DdpgArgs> for DDPGConfig {
+    fn from(args: DdpgArgs) -> Self {
+        let defaults = Self::default();
+        Self {
+            gamma: args.gamma,
+            batch_size: args.batch_size,
+            replay_capacity: args.replay_capacity,
+            warm_up_transitions: args.warm_up_transitions,
+            steps_per_iteration: args.steps_per_iteration,
+            updates_per_iteration: args.updates_per_iteration,
+            exploration_noise: args.exploration_noise,
+            iterations: args.iterations,
+            ema_rate: args.ema_rate,
+            q_network: MlpSettings {
+                learning_rate: args
+                    .q_learning_rate
+                    .unwrap_or(defaults.q_network.learning_rate),
+                hidden_dims: args.q_hidden_dims.unwrap_or(defaults.q_network.hidden_dims),
+                activation: args.q_activation.unwrap_or(defaults.q_network.activation),
+            },
+            pi_network: MlpSettings {
+                learning_rate: args
+                    .pi_learning_rate
+                    .unwrap_or(defaults.pi_network.learning_rate),
+                hidden_dims: args
+                    .pi_hidden_dims
+                    .unwrap_or(defaults.pi_network.hidden_dims),
+                activation: args.pi_activation.unwrap_or(defaults.pi_network.activation),
+            },
         }
     }
 }

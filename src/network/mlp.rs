@@ -10,30 +10,11 @@ use burn::{
 use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
 
-use crate::schedule::Schedule;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Activation {
     Relu,
     Tanh,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct MlpSettings {
-    pub learning_rate: Schedule,
-    pub hidden_dims: Vec<usize>,
-    pub activation: Activation,
-}
-
-impl Default for MlpSettings {
-    fn default() -> Self {
-        Self {
-            learning_rate: Schedule::Constant { value: 1e-4 },
-            hidden_dims: vec![64],
-            activation: Activation::Relu,
-        }
-    }
 }
 
 #[derive(Module, Debug)]

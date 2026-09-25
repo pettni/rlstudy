@@ -14,7 +14,8 @@ pub mod reinforce;
 pub mod td;
 
 pub use actor_critic::{ActorCritic, ActorCriticConfig};
-pub use approximate_td::{ApproximateTD, ApproximateTDConfig};
+pub use approximate_td::{ApproximateTD, ApproximateTDArgs, ApproximateTDConfig};
+pub use ddpg::{DDPG, DDPGConfig, DdpgArgs};
 pub use dqn::{DeepQLearning, DqnArgs, DqnConfig, DqnMode, Loss, Schedule, TargetUpdateConfig};
 pub use monte_carlo::{MonteCarlo, MonteCarloConfig};
 pub use policy_gradient::{PolicyGradient, PpoConfig, VanillaPolicyGradientConfig};

@@ -3,7 +3,10 @@ use std::collections::VecDeque;
 use crate::algorithms::{ModelFreeSolver, SolveResult, SolveStatus};
 use crate::backend::{TrainingBackend, device};
 use crate::environment::{Environment, Space};
-use crate::network::{gradient_norm, mlp::MlpModel};
+use crate::network::{
+    MlpSettings, gradient_norm,
+    mlp::{Activation, MlpModel},
+};
 use crate::policy::{
     Policy,
     dq::{DeepQPolicy, DeepQPolicyMode},
@@ -21,25 +24,16 @@ use ndarray::Array1;
 use rand::RngExt;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, PartialEq, Args, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ApproximateTDConfig {
-    #[arg(long, default_value_t = ApproximateTDConfig::default().n)]
     pub n: usize,
-    #[arg(long, default_value_t = ApproximateTDConfig::default().gamma)]
     pub gamma: f64,
-    #[arg(long, default_value_t = ApproximateTDConfig::default().epsilon)]
     pub epsilon: f64,
     /// Scale rewards in TD targets; reported returns keep their original units.
-    #[arg(long, default_value_t = ApproximateTDConfig::default().reward_scale)]
     pub reward_scale: f64,
-    #[arg(long, default_value = "linear:0.001:0.0001:999")]
-    pub learning_rate: Schedule,
-    #[arg(long, default_value_t = ApproximateTDConfig::default().hidden_dims)]
-    pub hidden_dims: usize,
-    #[arg(long, default_value_t = ApproximateTDConfig::default().episodes)]
+    pub q_network: MlpSettings,
     pub episodes: usize,
-    #[arg(long, default_value_t = ApproximateTDConfig::default().episode_length)]
     pub episode_length: usize,
 }
 
@@ -50,14 +44,59 @@ impl Default for ApproximateTDConfig {
             gamma: 0.9,
             epsilon: 0.1,
             reward_scale: 1.0,
-            learning_rate: Schedule::Linear {
-                initial: 0.001,
-                final_value: 0.0001,
-                steps: 999,
+            q_network: MlpSettings {
+                learning_rate: Schedule::Linear {
+                    initial: 0.001,
+                    final_value: 0.0001,
+                    steps: 999,
+                },
+                ..MlpSettings::default()
             },
-            hidden_dims: 64,
             episodes: 1_000,
             episode_length: 100,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Args)]
+pub struct ApproximateTDArgs {
+    #[arg(long, default_value_t = ApproximateTDConfig::default().n)]
+    n: usize,
+    #[arg(long, default_value_t = ApproximateTDConfig::default().gamma)]
+    gamma: f64,
+    #[arg(long, default_value_t = ApproximateTDConfig::default().epsilon)]
+    epsilon: f64,
+    #[arg(long, default_value_t = ApproximateTDConfig::default().reward_scale)]
+    reward_scale: f64,
+    #[arg(long)]
+    learning_rate: Option<Schedule>,
+    #[arg(long, value_delimiter = ',')]
+    hidden_dims: Option<Vec<usize>>,
+    #[arg(long, value_enum)]
+    activation: Option<Activation>,
+    #[arg(long, default_value_t = ApproximateTDConfig::default().episodes)]
+    episodes: usize,
+    #[arg(long, default_value_t = ApproximateTDConfig::default().episode_length)]
+    episode_length: usize,
+}
+
+impl From<ApproximateTDArgs> for ApproximateTDConfig {
+    fn from(args: ApproximateTDArgs) -> Self {
+        let defaults = Self::default();
+        Self {
+            n: args.n,
+            gamma: args.gamma,
+            epsilon: args.epsilon,
+            reward_scale: args.reward_scale,
+            q_network: MlpSettings {
+                learning_rate: args
+                    .learning_rate
+                    .unwrap_or(defaults.q_network.learning_rate),
+                hidden_dims: args.hidden_dims.unwrap_or(defaults.q_network.hidden_dims),
+                activation: args.activation.unwrap_or(defaults.q_network.activation),
+            },
+            episodes: args.episodes,
+            episode_length: args.episode_length,
         }
     }
 }
@@ -77,7 +116,7 @@ impl ApproximateTD {
         if !config.epsilon.is_finite() || !(0.0..=1.0).contains(&config.epsilon) {
             return Err("epsilon must be finite and in [0, 1]".into());
         }
-        if config.hidden_dims == 0 {
+        if config.q_network.hidden_dims.is_empty() || config.q_network.hidden_dims.contains(&0) {
             return Err("hidden dims must be positive".into());
         }
         if !config.reward_scale.is_finite() || config.reward_scale <= 0.0 {
@@ -114,7 +153,13 @@ impl ModelFreeSolver for ApproximateTD {
             AdamConfig::new().init();
 
         // q(s) = logits over actions
-        let mut q = MlpModel::new(n_s, self.config.hidden_dims, n_a, device());
+        let mut q = MlpModel::new_with_hidden_layers(
+            n_s,
+            &self.config.q_network.hidden_dims,
+            n_a,
+            self.config.q_network.activation,
+            device(),
+        );
 
         for episode_index in 0..self.config.episodes {
             let mut state = env.reset(rng);
@@ -130,7 +175,7 @@ impl ModelFreeSolver for ApproximateTD {
             let mut episode_loss = 0.0;
             let mut episode_gradient_norm = 0.0;
 
-            let learning_rate = self.config.learning_rate.value(episode_index);
+            let learning_rate = self.config.q_network.learning_rate.value(episode_index);
 
             let mut terminated = false;
 

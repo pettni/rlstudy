@@ -1,8 +1,11 @@
 mode: ddqn
 gamma: 0.99
-learning_rate:
-  type: constant
-  value: 0.001
+q_network:
+  learning_rate:
+    type: constant
+    value: 0.001
+  hidden_dims: [64]
+  activation: relu
 batch_size: 64
 replay_capacity: 10000
 warm_up_transitions: 256
@@ -17,4 +20,3 @@ target_update:
   rate: 0.01
 loss: l2
 gradient_clip_value: 100.0
-hidden_dims: 64

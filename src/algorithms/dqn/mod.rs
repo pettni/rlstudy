@@ -4,6 +4,7 @@ use self::trainer::DqnTrainer;
 use crate::algorithms::{ModelFreeSolver, SolveResult, SolveStatus, validate_gamma};
 use crate::environment::{Environment, Rollout, Space};
 pub use crate::network::loss::Loss;
+use crate::network::{MlpSettings, mlp::Activation};
 use crate::policy::{
     DiscretePolicy,
     dq::{DeepQPolicy, DeepQPolicyMode},
@@ -59,7 +60,7 @@ impl FromStr for TargetUpdateConfig {
 pub struct DqnConfig {
     pub mode: DqnMode,
     pub gamma: f64,
-    pub learning_rate: Schedule,
+    pub q_network: MlpSettings,
     pub batch_size: usize,
     pub replay_capacity: usize,
     pub warm_up_transitions: usize,
@@ -69,7 +70,6 @@ pub struct DqnConfig {
     pub target_update: TargetUpdateConfig,
     pub loss: Loss,
     pub gradient_clip_value: Option<f32>,
-    pub hidden_dims: usize,
 }
 
 impl Default for DqnConfig {
@@ -77,7 +77,10 @@ impl Default for DqnConfig {
         Self {
             mode: DqnMode::default(),
             gamma: 0.9,
-            learning_rate: Schedule::Constant { value: 0.001 },
+            q_network: MlpSettings {
+                learning_rate: Schedule::Constant { value: 0.001 },
+                ..MlpSettings::default()
+            },
             batch_size: 64,
             replay_capacity: 1_000,
             warm_up_transitions: 1_000,
@@ -87,7 +90,6 @@ impl Default for DqnConfig {
             target_update: TargetUpdateConfig::default(),
             loss: Loss::default(),
             gradient_clip_value: None,
-            hidden_dims: 64,
         }
     }
 }
@@ -100,6 +102,10 @@ pub struct DqnArgs {
     gamma: f64,
     #[arg(long)]
     learning_rate: Option<Schedule>,
+    #[arg(long, value_delimiter = ',')]
+    hidden_dims: Option<Vec<usize>>,
+    #[arg(long, value_enum)]
+    activation: Option<Activation>,
     #[arg(long, default_value_t = DqnConfig::default().batch_size)]
     batch_size: usize,
     #[arg(long, default_value_t = DqnConfig::default().replay_capacity)]
@@ -118,18 +124,21 @@ pub struct DqnArgs {
     loss: Loss,
     #[arg(long)]
     gradient_clip_value: Option<f32>,
-    #[arg(long, default_value_t = DqnConfig::default().hidden_dims)]
-    hidden_dims: usize,
 }
 
 impl From<DqnArgs> for DqnConfig {
     fn from(args: DqnArgs) -> Self {
+        let defaults = Self::default();
         Self {
             mode: args.mode,
             gamma: args.gamma,
-            learning_rate: args
-                .learning_rate
-                .unwrap_or(DqnConfig::default().learning_rate),
+            q_network: MlpSettings {
+                learning_rate: args
+                    .learning_rate
+                    .unwrap_or(defaults.q_network.learning_rate),
+                hidden_dims: args.hidden_dims.unwrap_or(defaults.q_network.hidden_dims),
+                activation: args.activation.unwrap_or(defaults.q_network.activation),
+            },
             batch_size: args.batch_size,
             replay_capacity: args.replay_capacity,
             warm_up_transitions: args.warm_up_transitions,
@@ -139,7 +148,6 @@ impl From<DqnArgs> for DqnConfig {
             target_update: args.target_update.unwrap_or_default(),
             loss: args.loss,
             gradient_clip_value: args.gradient_clip_value,
-            hidden_dims: args.hidden_dims,
         }
     }
 }
@@ -201,7 +209,8 @@ impl ModelFreeSolver for DeepQLearning {
 
         let mut trainer = DqnTrainer::new(
             f_dim,
-            self.config.hidden_dims,
+            &self.config.q_network.hidden_dims,
+            self.config.q_network.activation,
             n_a,
             self.config.gradient_clip_value,
             self.config.mode,
@@ -209,7 +218,7 @@ impl ModelFreeSolver for DeepQLearning {
         );
         let mut iter = 0;
         for episode in 0..self.config.episodes {
-            let learning_rate = self.config.learning_rate.value(episode);
+            let learning_rate = self.config.q_network.learning_rate.value(episode);
             let mut episode_return = 0.0;
             let mut episode_loss = 0.0;
             let mut episode_gradient_norm = 0.0;
