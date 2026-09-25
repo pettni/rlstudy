@@ -7,11 +7,24 @@ use pyo3::{
     types::{PyDict, PyTuple},
 };
 use rand::RngExt;
+use std::path::PathBuf;
 
-#[derive(Default)]
 pub struct GymOptions {
     pub max_episode_steps: Option<usize>,
     pub normalize_observations: bool,
+    pub video_folder: Option<PathBuf>,
+    pub video_every: usize,
+}
+
+impl Default for GymOptions {
+    fn default() -> Self {
+        Self {
+            max_episode_steps: None,
+            normalize_observations: false,
+            video_folder: None,
+            video_every: 1,
+        }
+    }
 }
 
 pub enum GymEnvironment {
@@ -37,16 +50,44 @@ struct GymCore {
 impl GymEnvironment {
     pub fn new(id: &str, options: &GymOptions) -> PyResult<Self> {
         Python::attach(|py| {
+            if options.video_folder.is_some()
+                && std::env::var_os("MUJOCO_GL").is_none()
+                && std::env::var_os("DISPLAY").is_none()
+            {
+                PyModule::import(py, "os")?
+                    .getattr("environ")?
+                    .set_item("MUJOCO_GL", "egl")?;
+            }
             let gym = PyModule::import(py, "gymnasium")?;
             let kwargs = PyDict::new(py);
             if let Some(limit) = options.max_episode_steps {
                 kwargs.set_item("max_episode_steps", limit)?;
+            }
+            if options.video_folder.is_some() {
+                kwargs.set_item("render_mode", "rgb_array")?;
             }
             let mut env = gym.call_method("make", (id,), Some(&kwargs))?;
             if options.normalize_observations {
                 env = gym
                     .getattr("wrappers")?
                     .call_method1("RescaleObservation", (env, -1.0, 1.0))?;
+            }
+            if let Some(folder) = &options.video_folder {
+                let folder = folder
+                    .to_str()
+                    .ok_or_else(|| PyValueError::new_err("video folder must be valid UTF-8"))?;
+                let kwargs = PyDict::new(py);
+                kwargs.set_item("video_folder", folder)?;
+                let globals = PyDict::new(py);
+                globals.set_item("every", options.video_every)?;
+                let episode_trigger = PyModule::import(py, "builtins")?.call_method1(
+                    "eval",
+                    ("lambda episode_id: episode_id % every == 0", globals),
+                )?;
+                kwargs.set_item("episode_trigger", episode_trigger)?;
+                env = gym
+                    .getattr("wrappers")?
+                    .call_method("RecordVideo", (env,), Some(&kwargs))?;
             }
             let env = env.unbind();
             let bound = env.bind(py);

@@ -42,6 +42,12 @@ struct SolveArgs {
     /// Rescale bounded Gymnasium observations to [-1, 1].
     #[arg(long, requires = "gym")]
     normalize_observations: bool,
+    /// Save selected evaluation episodes as MP4 files.
+    #[arg(long, requires = "gym")]
+    evaluation_video_dir: Option<PathBuf>,
+    /// Record every Nth evaluation episode.
+    #[arg(long, requires = "evaluation_video_dir")]
+    evaluation_video_every: Option<usize>,
     #[arg(long)]
     config: Option<PathBuf>,
     #[command(flatten)]
@@ -64,12 +70,23 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
 
 fn solve(args: &SolveArgs) -> Result<(), Box<dyn std::error::Error>> {
     args.reporting.validate()?;
+    if args.evaluation_video_every == Some(0) {
+        return Err("evaluation video interval must be positive".into());
+    }
     if !args.value_gamma.is_finite() || !(0.0..1.0).contains(&args.value_gamma) {
         return Err("value gamma must be finite and in [0, 1)".into());
     }
     let gym_options = GymOptions {
         max_episode_steps: args.gym_max_steps,
         normalize_observations: args.normalize_observations,
+        video_folder: None,
+        video_every: 1,
+    };
+    let evaluation_gym_options = GymOptions {
+        max_episode_steps: args.gym_max_steps,
+        normalize_observations: args.normalize_observations,
+        video_folder: args.evaluation_video_dir.clone(),
+        video_every: args.evaluation_video_every.unwrap_or(1),
     };
     let mut system = build_system(
         args.grid_world.as_deref(),
@@ -84,7 +101,7 @@ fn solve(args: &SolveArgs) -> Result<(), Box<dyn std::error::Error>> {
         &mut rng,
         &args.reporting,
         args.gym.as_deref(),
-        &gym_options,
+        &evaluation_gym_options,
         args.seed ^ 0x6a09_e667_f3bc_c909,
     )?;
     let discrete_model = system
@@ -623,6 +640,12 @@ mod tests {
             "3",
             "--evaluation-max-steps",
             "20",
+            "--gym",
+            "CartPole-v1",
+            "--evaluation-video-dir",
+            "videos",
+            "--evaluation-video-every",
+            "3",
             "--value-gamma",
             "0.5",
             "reinforce",
@@ -632,6 +655,8 @@ mod tests {
         assert_eq!(args.reporting.evaluation_frequency, Some(7));
         assert_eq!(args.reporting.evaluation_episodes, 3);
         assert_eq!(args.reporting.evaluation_max_steps, 20);
+        assert_eq!(args.evaluation_video_dir, Some(PathBuf::from("videos")));
+        assert_eq!(args.evaluation_video_every, Some(3));
         assert_eq!(args.value_gamma, 0.5);
     }
 }
