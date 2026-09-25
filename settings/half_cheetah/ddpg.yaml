@@ -1,0 +1,21 @@
+gamma: 0.99
+batch_size: 100
+replay_capacity: 1000000
+warm_up_transitions: 10000
+steps_per_iteration: 50
+q_updates_per_iteration: 50
+exploration_noise: 0.1
+iterations: 7800
+ema_rate: 0.005
+q_network:
+  learning_rate:
+    type: constant
+    value: 0.001
+  hidden_dims: [256, 256]
+  activation: relu
+pi_network:
+  learning_rate:
+    type: constant
+    value: 0.001
+  hidden_dims: [256, 256]
+  activation: relu

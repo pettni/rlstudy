@@ -3,10 +3,7 @@ use std::collections::VecDeque;
 use crate::algorithms::{ModelFreeSolver, SolveResult, SolveStatus};
 use crate::backend::{TrainingBackend, device};
 use crate::environment::{Environment, Space};
-use crate::network::{
-    MlpSettings, gradient_norm,
-    mlp::{Activation, MlpModel},
-};
+use crate::network::{AdamOptimizer, MlpModel, MlpSettings, gradient_norm};
 use crate::policy::{
     Policy,
     dq::{DeepQPolicy, DeepQPolicyMode},
@@ -16,13 +13,16 @@ use crate::schedule::Schedule;
 use burn::{
     Tensor,
     module::AutodiffModule,
-    optim::{Adam, AdamConfig, GradientsParams, Optimizer, adaptor::OptimizerAdaptor},
+    optim::{AdamConfig, GradientsParams, Optimizer},
     tensor::{Int, TensorData, backend::Backend},
 };
-use clap::Args;
 use ndarray::Array1;
 use rand::RngExt;
 use serde::{Deserialize, Serialize};
+
+mod cli;
+
+pub use cli::ApproximateTDArgs;
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
@@ -54,49 +54,6 @@ impl Default for ApproximateTDConfig {
             },
             episodes: 1_000,
             episode_length: 100,
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Args)]
-pub struct ApproximateTDArgs {
-    #[arg(long, default_value_t = ApproximateTDConfig::default().n)]
-    n: usize,
-    #[arg(long, default_value_t = ApproximateTDConfig::default().gamma)]
-    gamma: f64,
-    #[arg(long, default_value_t = ApproximateTDConfig::default().epsilon)]
-    epsilon: f64,
-    #[arg(long, default_value_t = ApproximateTDConfig::default().reward_scale)]
-    reward_scale: f64,
-    #[arg(long)]
-    learning_rate: Option<Schedule>,
-    #[arg(long, value_delimiter = ',')]
-    hidden_dims: Option<Vec<usize>>,
-    #[arg(long, value_enum)]
-    activation: Option<Activation>,
-    #[arg(long, default_value_t = ApproximateTDConfig::default().episodes)]
-    episodes: usize,
-    #[arg(long, default_value_t = ApproximateTDConfig::default().episode_length)]
-    episode_length: usize,
-}
-
-impl From<ApproximateTDArgs> for ApproximateTDConfig {
-    fn from(args: ApproximateTDArgs) -> Self {
-        let defaults = Self::default();
-        Self {
-            n: args.n,
-            gamma: args.gamma,
-            epsilon: args.epsilon,
-            reward_scale: args.reward_scale,
-            q_network: MlpSettings {
-                learning_rate: args
-                    .learning_rate
-                    .unwrap_or(defaults.q_network.learning_rate),
-                hidden_dims: args.hidden_dims.unwrap_or(defaults.q_network.hidden_dims),
-                activation: args.activation.unwrap_or(defaults.q_network.activation),
-            },
-            episodes: args.episodes,
-            episode_length: args.episode_length,
         }
     }
 }
@@ -149,17 +106,9 @@ impl ModelFreeSolver for ApproximateTD {
 
         <TrainingBackend as Backend>::seed(device(), rng.random());
 
-        let mut optimizer: OptimizerAdaptor<Adam, MlpModel<TrainingBackend>, TrainingBackend> =
-            AdamConfig::new().init();
-
         // q(s) = logits over actions
-        let mut q = MlpModel::new_with_hidden_layers(
-            n_s,
-            &self.config.q_network.hidden_dims,
-            n_a,
-            self.config.q_network.activation,
-            device(),
-        );
+        let mut q = self.config.q_network.init(n_s, n_a);
+        let mut optimizer: AdamOptimizer<MlpModel<TrainingBackend>> = AdamConfig::new().init();
 
         for episode_index in 0..self.config.episodes {
             let mut state = env.reset(rng);

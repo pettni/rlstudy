@@ -3,7 +3,8 @@ batch_size: 100
 replay_capacity: 1000000
 warm_up_transitions: 10000
 steps_per_iteration: 50
-updates_per_iteration: 50
+q_updates_per_iteration: 50
+pi_updates_every_n_q_updates: 2
 exploration_noise: 0.1
 iterations: 7800
 ema_rate: 0.005
@@ -19,3 +20,5 @@ pi_network:
     value: 0.001
   hidden_dims: [256, 256]
   activation: relu
+target_noise: 0.2
+target_noise_clip: 0.5

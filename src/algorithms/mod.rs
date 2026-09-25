@@ -5,26 +5,32 @@ use crate::reporting::{Reporter, ReporterConfig};
 
 pub mod actor_critic;
 pub mod approximate_td;
-pub mod ddpg;
+pub mod deterministic_policy_gradient;
 pub mod dqn;
 pub mod monte_carlo;
-pub mod policy_gradient;
 pub mod policy_iteration;
 pub mod reinforce;
+pub mod stochastic_policy_gradient;
 pub mod td;
 
-pub use actor_critic::{ActorCritic, ActorCriticConfig};
+pub use actor_critic::{ActorCritic, ActorCriticArgs, ActorCriticConfig};
 pub use approximate_td::{ApproximateTD, ApproximateTDArgs, ApproximateTDConfig};
-pub use ddpg::{DDPG, DDPGConfig, DdpgArgs};
-pub use dqn::{DeepQLearning, DqnArgs, DqnConfig, DqnMode, Loss, Schedule, TargetUpdateConfig};
-pub use monte_carlo::{MonteCarlo, MonteCarloConfig};
-pub use policy_gradient::{PolicyGradient, PpoConfig, VanillaPolicyGradientConfig};
-pub use policy_iteration::{
-    PolicyIterationConfig, StoppingCriterion, TruncatedPolicyIteration,
-    TruncatedPolicyIterationConfig, ValueIterationConfig,
+pub use deterministic_policy_gradient::{
+    DdpgArgs, DdpgConfig, DeterministicPolicyGradient, Td3Args, Td3Config,
 };
-pub use reinforce::{Reinforce, ReinforceConfig};
-pub use td::{TD, TDConfig, TDVariant};
+pub use dqn::{DeepQLearning, DqnArgs, DqnConfig, DqnMode, Loss, Schedule, TargetUpdateConfig};
+pub use monte_carlo::{MonteCarlo, MonteCarloArgs, MonteCarloConfig};
+pub use policy_iteration::{
+    PolicyIterationArgs, PolicyIterationConfig, StoppingCriterion, TruncatedPolicyIteration,
+    TruncatedPolicyIterationArgs, TruncatedPolicyIterationConfig, ValueIterationArgs,
+    ValueIterationConfig,
+};
+pub use reinforce::{Reinforce, ReinforceArgs, ReinforceConfig};
+pub use stochastic_policy_gradient::{
+    PpoArgs, PpoConfig, StochasticPolicyGradient, VanillaPolicyGradientArgs,
+    VanillaPolicyGradientConfig,
+};
+pub use td::{TD, TDArgs, TDConfig, TDVariant};
 
 pub trait ModelBasedSolver {
     type Observation;

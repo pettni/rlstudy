@@ -8,7 +8,7 @@ use rand::RngExt;
 use super::Actor;
 use crate::{
     backend::{Device, InferenceBackend, TrainingBackend, device},
-    network::mlp::{Activation, MlpModel},
+    network::{Activation, MlpModel},
     policy::Policy,
 };
 
@@ -26,13 +26,7 @@ impl<B: Backend> CategoricalActor<B> {
         device: &B::Device,
     ) -> Self {
         Self {
-            network: MlpModel::new_with_hidden_layers(
-                state_dim,
-                hidden_dims,
-                action_dim,
-                activation,
-                device,
-            ),
+            network: MlpModel::new(state_dim, hidden_dims, action_dim, activation, device),
         }
     }
 

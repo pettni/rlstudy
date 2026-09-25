@@ -45,18 +45,19 @@ Q-value.
 
 ## Algorithms
 
-| Algorithm | Policy relation | Learned quantities | Value target | Policy signal | Data usage |
-| --- | --- | --- | --- | --- | --- |
-| Value iteration | Model-based | V or Q | Bellman optimality | None; policy derived from values | Full sweeps |
-| SARSA | On-policy | Q | One-step TD using the sampled next action | None; policy derived from Q | Online |
-| Approximate TD(n) | On-policy | Neural Q | n-step TD using the sampled bootstrap action | None; policy derived from Q | Online n-step window |
-| Q-learning | Off-policy | Q | One-step TD using the greedy next action | None; policy derived from Q | Online |
-| DQN | Off-policy | Neural Q | Q-learning target | None; policy derived from Q | Replay batches |
-| REINFORCE | On-policy | Policy | None without a critic | Monte Carlo return | Episodes |
-| REINFORCE with baseline | On-policy | Policy and V | Monte Carlo or TD critic target | Return minus V(s) | Episodes |
-| Actor-critic | On-policy | Policy and V | One-step TD | TD error | Online |
-| VPG | On-policy | Policy and V | Bootstrapped return | GAE advantage | Trajectory batches |
-| PPO | On-policy | Policy and V | Bootstrapped return | GAE advantage through a clipped probability ratio | Trajectory batches with multiple updates |
+| Algorithm | State space | Action space | Policy relation | Learned quantities | Value target | Policy signal | Data usage |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Value iteration | Discrete | Discrete | Model-based | V or Q | Bellman optimality | None; policy derived from values | Full sweeps |
+| SARSA | Discrete | Discrete | On-policy | Q | One-step TD using the sampled next action | None; policy derived from Q | Online |
+| Approximate TD(n) | Continuous | Discrete | On-policy | Neural Q | n-step TD using the sampled bootstrap action | None; policy derived from Q | Online n-step window |
+| Q-learning | Discrete | Discrete | Off-policy | Q | One-step TD using the greedy next action | None; policy derived from Q | Online |
+| DQN / DDQN | Continuous | Discrete | Off-policy | Neural Q | Q-learning target; DDQN separates next-action selection from evaluation | None; policy derived from Q | Replay batches |
+| DDPG | Continuous | Continuous | Off-policy | Deterministic policy and neural Q | One-step TD using the target policy and target Q | Q gradient through the critic | Replay batches |
+| REINFORCE | Continuous | Discrete or continuous | On-policy | Policy | None without a critic | Monte Carlo return | Episodes |
+| REINFORCE with baseline | Continuous | Discrete or continuous | On-policy | Policy and V | Monte Carlo or TD critic target | Return minus V(s) | Episodes |
+| Actor-critic | Continuous | Discrete or continuous | On-policy | Policy and V | One-step TD | TD error | Online |
+| VPG | Continuous | Discrete or continuous | On-policy | Policy and V | Bootstrapped return | GAE advantage | Trajectory batches |
+| PPO | Continuous | Discrete or continuous | On-policy | Policy and V | Bootstrapped return | GAE advantage through a clipped probability ratio | Trajectory batches with multiple updates |
 
 ## Bias and variance
 

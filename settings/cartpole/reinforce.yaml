@@ -1,0 +1,21 @@
+gamma: 1.0
+critic: td
+pi_network:
+  learning_rate:
+    type: stepwise
+    initial: 0.01
+    changes:
+      - [500, 0.0005]
+  hidden_dims: [16]
+  activation: relu
+v_network:
+  learning_rate:
+    type: stepwise
+    initial: 0.01
+    changes:
+      - [500, 0.0005]
+  hidden_dims: [16]
+  activation: relu
+episodes: 600
+episode_length: 500
+gradient_clip_value: 100

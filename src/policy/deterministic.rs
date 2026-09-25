@@ -6,7 +6,7 @@ use ndarray::Array1;
 
 use crate::{
     backend::{Device, device},
-    network::mlp::MlpModel,
+    network::MlpModel,
     policy::Policy,
 };
 
@@ -91,7 +91,7 @@ where
 mod tests {
     use super::*;
     use crate::backend::InferenceBackend;
-    use crate::network::mlp::OutputTransform;
+    use crate::network::{Activation, OutputTransform};
     use burn::module::Reinitializer;
     use ndarray::array;
     use rand::{SeedableRng, rngs::StdRng};
@@ -100,7 +100,7 @@ mod tests {
     fn scales_and_clips_actions_to_bounds() {
         let model = Reinitializer::<InferenceBackend>::new()
             .constant_float(0.0)
-            .apply(MlpModel::new(1, 2, 2, device()))
+            .apply(MlpModel::new(1, &[2], 2, Activation::Relu, device()))
             .with_output_transform(OutputTransform::bounded_tanh(
                 &[-2.0, 1.0],
                 &[2.0, 3.0],

@@ -2,9 +2,13 @@ use crate::algorithms::{ModelFreeSolver, SolveResult, SolveStatus, validate_gamm
 use crate::environment::{Environment, Space, Step};
 use crate::policy::{Policy, PolicyObjective, TabularPolicy};
 use crate::reporting::{Reporter, Step as ReportStep};
-use clap::{Args, ValueEnum};
+use clap::ValueEnum;
 use ndarray::{Array2, ArrayView1};
 use serde::{Deserialize, Serialize};
+
+mod cli;
+
+pub use cli::TDArgs;
 
 /// TD-family of model-free control algorithm.
 ///
@@ -29,20 +33,14 @@ pub enum TDVariant {
     QLearning,
 }
 
-#[derive(Debug, Clone, PartialEq, Args, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct TDConfig {
-    #[arg(long, default_value_t = TDConfig::default().gamma)]
     pub gamma: f64,
-    #[arg(long, default_value_t = TDConfig::default().episodes)]
     pub episodes: u64,
-    #[arg(long, default_value_t = TDConfig::default().episode_length)]
     pub episode_length: u64,
-    #[arg(long, default_value_t = TDConfig::default().epsilon)]
     pub epsilon: f64,
-    #[arg(long, default_value_t = TDConfig::default().alpha)]
     pub alpha: f64,
-    #[arg(long, value_enum, default_value_t = TDConfig::default().variant)]
     pub variant: TDVariant,
 }
 

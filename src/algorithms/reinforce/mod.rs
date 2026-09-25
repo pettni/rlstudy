@@ -2,9 +2,9 @@ use crate::algorithms::{ModelFreeSolver, SolveResult, SolveStatus};
 use crate::backend::{TrainingBackend, device};
 use crate::environment::{Environment, Rollout, Space};
 use crate::network::{
+    AdamOptimizer, MlpModel, MlpSettings,
     actor::{Actor, CategoricalActor},
     gradient_norm,
-    mlp::{Activation, MlpModel},
 };
 use crate::reporting::{Reporter, Step};
 use crate::schedule::Schedule;
@@ -13,13 +13,17 @@ use burn::grad_clipping::GradientClippingConfig;
 use burn::tensor::ElementConversion;
 use burn::{
     module::AutodiffModule,
-    optim::{Adam, AdamConfig, GradientsParams, Optimizer, adaptor::OptimizerAdaptor},
+    optim::{AdamConfig, GradientsParams, Optimizer},
     tensor::backend::Backend,
 };
-use clap::{Args, ValueEnum};
+use clap::ValueEnum;
 use ndarray::Array1;
 use rand::RngExt;
 use serde::{Deserialize, Serialize};
+
+mod cli;
+
+pub use cli::ReinforceArgs;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -30,35 +34,35 @@ pub enum UpdateVariant {
     TD,
 }
 
-#[derive(Debug, Clone, PartialEq, Args, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ReinforceConfig {
-    #[arg(long, default_value_t = ReinforceConfig::default().gamma)]
     pub gamma: f64,
-    #[arg(long, default_value = "linear:0.001:0.0001:999")]
-    pub learning_rate: Schedule,
-    #[arg(long, default_value_t = ReinforceConfig::default().hidden_dims)]
-    pub hidden_dims: usize,
-    #[arg(long, default_value_t = ReinforceConfig::default().episodes)]
+    pub pi_network: MlpSettings,
+    pub v_network: MlpSettings,
     pub episodes: usize,
-    #[arg(long, default_value_t = ReinforceConfig::default().episode_length)]
     pub episode_length: usize,
-    #[arg(long)]
     gradient_clip_value: Option<f32>,
-    #[arg(long)]
     pub critic: Option<UpdateVariant>,
 }
 
 impl Default for ReinforceConfig {
     fn default() -> Self {
+        let learning_rate = Schedule::Linear {
+            initial: 0.001,
+            final_value: 0.0001,
+            steps: 999,
+        };
         Self {
             gamma: 0.9,
-            learning_rate: Schedule::Linear {
-                initial: 0.001,
-                final_value: 0.0001,
-                steps: 999,
+            pi_network: MlpSettings {
+                learning_rate: learning_rate.clone(),
+                ..MlpSettings::default()
             },
-            hidden_dims: 64,
+            v_network: MlpSettings {
+                learning_rate,
+                ..MlpSettings::default()
+            },
             episodes: 1_000,
             episode_length: 100,
             gradient_clip_value: None,
@@ -76,7 +80,10 @@ impl Reinforce {
         if !config.gamma.is_finite() || !(0.0..=1.0).contains(&config.gamma) {
             return Err("gamma must be finite and in [0, 1]".into());
         }
-        if config.hidden_dims == 0 {
+        if [&config.pi_network, &config.v_network]
+            .into_iter()
+            .any(|network| network.hidden_dims.is_empty() || network.hidden_dims.contains(&0))
+        {
             return Err("hidden dims must be positive".into());
         }
         if config.episodes == 0 || config.episode_length == 0 {
@@ -110,26 +117,20 @@ impl ModelFreeSolver for Reinforce {
             .config
             .gradient_clip_value
             .map(GradientClippingConfig::Norm);
-        let mut pi_optimizer: OptimizerAdaptor<
-            Adam,
-            CategoricalActor<TrainingBackend>,
-            TrainingBackend,
-        > = AdamConfig::new()
-            .with_grad_clipping(gradient_clipping.clone())
-            .init();
-        let mut v_optimizer: OptimizerAdaptor<Adam, MlpModel<TrainingBackend>, TrainingBackend> =
-            AdamConfig::new()
-                .with_grad_clipping(gradient_clipping)
-                .init();
-
         let mut pi = CategoricalActor::new(
             n_s,
-            &[self.config.hidden_dims],
+            &self.config.pi_network.hidden_dims,
             n_a,
-            Activation::Relu,
+            self.config.pi_network.activation,
             device(),
         );
-        let mut v = MlpModel::new(n_s, self.config.hidden_dims, 1, device());
+        let mut pi_optimizer: AdamOptimizer<CategoricalActor<TrainingBackend>> = AdamConfig::new()
+            .with_grad_clipping(gradient_clipping.clone())
+            .init();
+        let mut v = self.config.v_network.init(n_s, 1);
+        let mut v_optimizer: AdamOptimizer<MlpModel<TrainingBackend>> = AdamConfig::new()
+            .with_grad_clipping(gradient_clipping)
+            .init();
         let mut buffer = TransitionBuffer::<usize>::with_capacity(self.config.episode_length, None);
         let mut rollout = Rollout::new(env, rng);
 
@@ -163,9 +164,10 @@ impl ModelFreeSolver for Reinforce {
 
             // observability
             let gradient_norm = gradient_norm(&pi, &grad_pi);
-            let learning_rate = self.config.learning_rate.value(episode_index);
+            let pi_learning_rate = self.config.pi_network.learning_rate.value(episode_index);
+            let v_learning_rate = self.config.v_network.learning_rate.value(episode_index);
 
-            pi = pi_optimizer.step(learning_rate, pi, grad_pi);
+            pi = pi_optimizer.step(pi_learning_rate, pi, grad_pi);
 
             // CRITIC UPDATE
 
@@ -186,7 +188,7 @@ impl ModelFreeSolver for Reinforce {
                 let loss = (delta_v.detach() * vt).sum().neg();
                 let grad_v = GradientsParams::from_grads(loss.backward(), &v);
 
-                v = v_optimizer.step(learning_rate, v, grad_v);
+                v = v_optimizer.step(v_learning_rate, v, grad_v);
             }
 
             reporter.record(
@@ -205,7 +207,8 @@ impl ModelFreeSolver for Reinforce {
                     ("train/length", episode_length as f64),
                     ("policy/entropy", entropy),
                     ("grad/norm", gradient_norm),
-                    ("optimizer/lr", learning_rate),
+                    ("optimizer/pi_lr", pi_learning_rate),
+                    ("optimizer/v_lr", v_learning_rate),
                 ],
             );
             reporter.policy(Step::Episode(episode_index + 1), || pi.valid());

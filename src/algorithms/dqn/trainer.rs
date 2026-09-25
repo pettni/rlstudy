@@ -1,51 +1,40 @@
 use super::DqnMode;
 use crate::backend::{InferenceBackend, TrainingBackend, device};
-use crate::network::loss::Loss;
-use crate::network::mlp::{Activation, MlpModel};
-use crate::network::{ema, gradient_norm};
+use crate::network::{AdamOptimizer, MlpModel, MlpSettings, ema, gradient_norm, loss::Loss};
 use crate::policy::dq::{DeepQPolicy, DeepQPolicyMode};
 use crate::transition_buffer::TransitionBufferTensorData;
 use burn::{
     module::AutodiffModule,
-    optim::{
-        Adam, AdamConfig, GradientsParams, Optimizer, adaptor::OptimizerAdaptor,
-        grad_clipping::GradientClippingConfig,
-    },
+    optim::{AdamConfig, GradientsParams, Optimizer, grad_clipping::GradientClippingConfig},
     tensor::backend::Backend,
 };
 
 pub(super) struct DqnTrainer {
     online: MlpModel<TrainingBackend>,
     target: MlpModel<TrainingBackend>,
-    optimizer: OptimizerAdaptor<Adam, MlpModel<TrainingBackend>, TrainingBackend>,
+    optimizer: AdamOptimizer<MlpModel<TrainingBackend>>,
     mode: DqnMode,
 }
 
 impl DqnTrainer {
     pub(super) fn new(
         feature_dim: usize,
-        hidden_dims: &[usize],
-        activation: Activation,
+        q_network: &MlpSettings,
         num_actions: usize,
         gradient_clip_value: Option<f32>,
         mode: DqnMode,
         seed: u64,
     ) -> Self {
         <TrainingBackend as Backend>::seed(device(), seed);
-        let target = MlpModel::new_with_hidden_layers(
-            feature_dim,
-            hidden_dims,
-            num_actions,
-            activation,
-            device(),
-        );
+        let target = q_network.init(feature_dim, num_actions);
+        let optimizer = AdamConfig::new()
+            .with_grad_clipping(gradient_clip_value.map(GradientClippingConfig::Value))
+            .init();
 
         Self {
             online: target.clone(),
             target,
-            optimizer: AdamConfig::new()
-                .with_grad_clipping(gradient_clip_value.map(GradientClippingConfig::Value))
-                .init(),
+            optimizer,
             mode,
         }
     }
@@ -117,7 +106,7 @@ mod tests {
 
     #[test]
     fn configures_gradient_value_clipping() {
-        let trainer = DqnTrainer::new(4, &[64], Activation::Relu, 2, Some(100.0), DqnMode::Dqn, 42);
+        let trainer = DqnTrainer::new(4, &MlpSettings::default(), 2, Some(100.0), DqnMode::Dqn, 42);
 
         assert!(matches!(
             trainer.optimizer.grad_clipping(),

@@ -56,17 +56,7 @@ pub struct MlpModel<B: Backend> {
 }
 
 impl<B: Backend> MlpModel<B> {
-    pub fn new(input_dim: usize, hidden_dim: usize, output_dim: usize, device: &B::Device) -> Self {
-        Self::new_with_hidden_layers(
-            input_dim,
-            &[hidden_dim],
-            output_dim,
-            Activation::Relu,
-            device,
-        )
-    }
-
-    pub fn new_with_hidden_layers(
+    pub fn new(
         input_dim: usize,
         hidden_dims: &[usize],
         output_dim: usize,
@@ -128,8 +118,7 @@ mod tests {
         let flex_device = Default::default();
 
         for activation in [Activation::Relu, Activation::Tanh] {
-            let model =
-                MlpModel::<Flex>::new_with_hidden_layers(3, &[4, 5], 2, activation, &flex_device);
+            let model = MlpModel::<Flex>::new(3, &[4, 5], 2, activation, &flex_device);
             let output = model.forward(Tensor::zeros([7, 3], &flex_device));
 
             assert_eq!(output.dims(), [7, 2]);
@@ -137,7 +126,7 @@ mod tests {
 
         let model = Reinitializer::<TrainingBackend>::new()
             .constant_float(0.0)
-            .apply(MlpModel::new(1, 2, 2, device()))
+            .apply(MlpModel::new(1, &[2], 2, Activation::Relu, device()))
             .with_output_transform(OutputTransform::bounded_tanh(
                 &[-2.0, 1.0],
                 &[2.0, 3.0],

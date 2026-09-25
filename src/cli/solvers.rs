@@ -1,26 +1,30 @@
 use clap::Subcommand;
 use rlstudy::algorithms::{
-    ActorCritic, ActorCriticConfig, ApproximateTD, ApproximateTDArgs, DDPG, DDPGConfig, DdpgArgs,
-    DeepQLearning, DqnArgs, MonteCarlo, MonteCarloConfig, PolicyGradient, PolicyIterationConfig,
-    PpoConfig, Reinforce, ReinforceConfig, TD, TDConfig, TruncatedPolicyIteration,
-    TruncatedPolicyIterationConfig, ValueIterationConfig, VanillaPolicyGradientConfig,
+    ActorCritic, ActorCriticArgs, ActorCriticConfig, ApproximateTD, ApproximateTDArgs,
+    ApproximateTDConfig, DdpgArgs, DdpgConfig, DeepQLearning, DeterministicPolicyGradient, DqnArgs,
+    DqnConfig, MonteCarlo, MonteCarloArgs, MonteCarloConfig, PolicyIterationArgs,
+    PolicyIterationConfig, PpoArgs, PpoConfig, Reinforce, ReinforceArgs, ReinforceConfig,
+    StochasticPolicyGradient, TD, TDArgs, TDConfig, Td3Args, Td3Config, TruncatedPolicyIteration,
+    TruncatedPolicyIterationArgs, TruncatedPolicyIterationConfig, ValueIterationArgs,
+    ValueIterationConfig, VanillaPolicyGradientArgs, VanillaPolicyGradientConfig,
 };
 use serde::{Serialize, de::DeserializeOwned};
 use std::{fs, path::Path};
 
 #[derive(Subcommand, Clone)]
 pub(super) enum Solver {
-    VI(ValueIterationConfig),
-    PI(PolicyIterationConfig),
-    Tpi(TruncatedPolicyIterationConfig),
-    MC(MonteCarloConfig),
-    TD(TDConfig),
+    VI(ValueIterationArgs),
+    PI(PolicyIterationArgs),
+    Tpi(TruncatedPolicyIterationArgs),
+    MC(MonteCarloArgs),
+    TD(TDArgs),
     Dqn(DqnArgs),
     Ddpg(DdpgArgs),
-    Reinforce(ReinforceConfig),
-    Vpg(VanillaPolicyGradientConfig),
-    Ppo(PpoConfig),
-    ActorCritic(ActorCriticConfig),
+    Td3(Td3Args),
+    Reinforce(ReinforceArgs),
+    Vpg(VanillaPolicyGradientArgs),
+    Ppo(PpoArgs),
+    ActorCritic(ActorCriticArgs),
     ApproximateTD(ApproximateTDArgs),
 }
 
@@ -34,6 +38,7 @@ impl Solver {
             Self::TD(_) => "td",
             Self::Dqn(_) => "dqn",
             Self::Ddpg(_) => "ddpg",
+            Self::Td3(_) => "td3",
             Self::Reinforce(_) => "reinforce",
             Self::Vpg(_) => "vpg",
             Self::Ppo(_) => "ppo",
@@ -48,10 +53,11 @@ pub(super) enum SelectedSolver {
     MonteCarlo(MonteCarlo),
     TD(TD),
     Dqn(DeepQLearning),
-    Ddpg(DDPG),
+    Ddpg(DeterministicPolicyGradient),
+    Td3(DeterministicPolicyGradient),
     Reinforce(Reinforce),
-    Vpg(PolicyGradient),
-    Ppo(PolicyGradient),
+    Vpg(StochasticPolicyGradient),
+    Ppo(StochasticPolicyGradient),
     ActorCritic(ActorCritic),
     ApproximateTD(ApproximateTD),
 }
@@ -61,88 +67,90 @@ pub(super) fn build_solver(
     config_path: Option<&Path>,
 ) -> Result<(SelectedSolver, serde_json::Value), Box<dyn std::error::Error>> {
     match solver {
-        Solver::VI(config) => {
-            let (config, parameters) = resolve_config(config, config_path)?;
+        Solver::VI(args) => {
+            let (config, parameters): (ValueIterationConfig, _) =
+                resolve_config(args, config_path)?;
             Ok((
                 SelectedSolver::ModelBased(TruncatedPolicyIteration::value_iteration(config)?),
                 parameters,
             ))
         }
-        Solver::PI(config) => {
-            let (config, parameters) = resolve_config(config, config_path)?;
+        Solver::PI(args) => {
+            let (config, parameters): (PolicyIterationConfig, _) =
+                resolve_config(args, config_path)?;
             Ok((
                 SelectedSolver::ModelBased(TruncatedPolicyIteration::policy_iteration(config)?),
                 parameters,
             ))
         }
-        Solver::Tpi(config) => {
-            let (config, parameters) = resolve_config(config, config_path)?;
+        Solver::Tpi(args) => {
+            let (config, parameters): (TruncatedPolicyIterationConfig, _) =
+                resolve_config(args, config_path)?;
             Ok((
                 SelectedSolver::ModelBased(TruncatedPolicyIteration::new(config)?),
                 parameters,
             ))
         }
-        Solver::MC(config) => {
-            let (config, parameters) = resolve_config(config, config_path)?;
+        Solver::MC(args) => {
+            let (config, parameters): (MonteCarloConfig, _) = resolve_config(args, config_path)?;
             Ok((
                 SelectedSolver::MonteCarlo(MonteCarlo::new(config)?),
                 parameters,
             ))
         }
-        Solver::TD(config) => {
-            let (config, parameters) = resolve_config(config, config_path)?;
+        Solver::TD(args) => {
+            let (config, parameters): (TDConfig, _) = resolve_config(args, config_path)?;
             Ok((SelectedSolver::TD(TD::new(config)?), parameters))
         }
         Solver::Dqn(args) => {
-            let config = match config_path {
-                Some(path) => read_config(path)?,
-                None => args.clone().into(),
-            };
-            let parameters = serde_json::to_value(&config)?;
+            let (config, parameters): (DqnConfig, _) = resolve_config(args, config_path)?;
             Ok((SelectedSolver::Dqn(DeepQLearning::new(config)?), parameters))
         }
         Solver::Ddpg(args) => {
-            let config: DDPGConfig = match config_path {
-                Some(path) => read_config(path)?,
-                None => args.clone().into(),
-            };
-            let parameters = serde_json::to_value(&config)?;
-            Ok((SelectedSolver::Ddpg(DDPG::new(config)?), parameters))
+            let (config, parameters): (DdpgConfig, _) = resolve_config(args, config_path)?;
+            Ok((
+                SelectedSolver::Ddpg(DeterministicPolicyGradient::new(config.into())?),
+                parameters,
+            ))
         }
-        Solver::Reinforce(config) => {
-            let (config, parameters) = resolve_config(config, config_path)?;
+        Solver::Td3(args) => {
+            let (config, parameters): (Td3Config, _) = resolve_config(args, config_path)?;
+            Ok((
+                SelectedSolver::Td3(DeterministicPolicyGradient::new(config.into())?),
+                parameters,
+            ))
+        }
+        Solver::Reinforce(args) => {
+            let (config, parameters): (ReinforceConfig, _) = resolve_config(args, config_path)?;
             Ok((
                 SelectedSolver::Reinforce(Reinforce::new(config)?),
                 parameters,
             ))
         }
-        Solver::Vpg(config) => {
-            let (config, parameters) = resolve_config(config, config_path)?;
+        Solver::Vpg(args) => {
+            let (config, parameters): (VanillaPolicyGradientConfig, _) =
+                resolve_config(args, config_path)?;
             Ok((
-                SelectedSolver::Vpg(PolicyGradient::vpg(config)?),
+                SelectedSolver::Vpg(StochasticPolicyGradient::vpg(config)?),
                 parameters,
             ))
         }
-        Solver::Ppo(config) => {
-            let (config, parameters) = resolve_config(config, config_path)?;
+        Solver::Ppo(args) => {
+            let (config, parameters): (PpoConfig, _) = resolve_config(args, config_path)?;
             Ok((
-                SelectedSolver::Ppo(PolicyGradient::ppo(config)?),
+                SelectedSolver::Ppo(StochasticPolicyGradient::ppo(config)?),
                 parameters,
             ))
         }
-        Solver::ActorCritic(config) => {
-            let (config, parameters) = resolve_config(config, config_path)?;
+        Solver::ActorCritic(args) => {
+            let (config, parameters): (ActorCriticConfig, _) = resolve_config(args, config_path)?;
             Ok((
                 SelectedSolver::ActorCritic(ActorCritic::new(config)?),
                 parameters,
             ))
         }
         Solver::ApproximateTD(args) => {
-            let config = match config_path {
-                Some(path) => read_config(path)?,
-                None => args.clone().into(),
-            };
-            let parameters = serde_json::to_value(&config)?;
+            let (config, parameters): (ApproximateTDConfig, _) = resolve_config(args, config_path)?;
             Ok((
                 SelectedSolver::ApproximateTD(ApproximateTD::new(config)?),
                 parameters,
@@ -151,17 +159,18 @@ pub(super) fn build_solver(
     }
 }
 
-fn resolve_config<T>(
-    config: &T,
+fn resolve_config<A, T>(
+    args: &A,
     path: Option<&Path>,
 ) -> Result<(T, serde_json::Value), Box<dyn std::error::Error>>
 where
-    T: Clone + DeserializeOwned + Serialize,
+    A: Clone + Into<T>,
+    T: DeserializeOwned + Serialize,
 {
     let config = if let Some(path) = path {
         read_config(path)?
     } else {
-        config.clone()
+        args.clone().into()
     };
     let parameters = serde_json::to_value(&config)?;
     Ok((config, parameters))
@@ -181,7 +190,7 @@ where
 #[cfg(test)]
 mod tests {
     use rlstudy::algorithms::{
-        ActorCriticConfig, ApproximateTDConfig, DDPGConfig, DqnConfig, PpoConfig, ReinforceConfig,
+        ActorCriticConfig, ApproximateTDConfig, DdpgConfig, DqnConfig, PpoConfig, ReinforceConfig,
         VanillaPolicyGradientConfig,
     };
 
@@ -214,8 +223,8 @@ mod tests {
     #[test]
     fn checked_in_dqn_configs_parse() {
         for contents in [
-            include_str!("../../settings/dqn_for_5x5.yaml"),
-            include_str!("../../settings/dqn_for_cartpole.yaml"),
+            include_str!("../../settings/zhao_5x5/dqn.yaml"),
+            include_str!("../../settings/cartpole/dqn.yaml"),
         ] {
             let config: DqnConfig = yaml_serde::from_str(contents).unwrap();
             assert!(rlstudy::algorithms::DeepQLearning::new(config).is_ok());
@@ -225,18 +234,16 @@ mod tests {
     #[test]
     fn checked_in_policy_gradient_config_parses() {
         let config: ReinforceConfig =
-            yaml_serde::from_str(include_str!("../../settings/reinforce_for_cartpole.yaml"))
-                .unwrap();
+            yaml_serde::from_str(include_str!("../../settings/cartpole/reinforce.yaml")).unwrap();
 
         assert!(rlstudy::algorithms::Reinforce::new(config).is_ok());
     }
 
     #[test]
     fn checked_in_actor_critic_config_parses() {
-        let config: ActorCriticConfig = yaml_serde::from_str(include_str!(
-            "../../settings/actor_critic_for_cartpole.yaml"
-        ))
-        .unwrap();
+        let config: ActorCriticConfig =
+            yaml_serde::from_str(include_str!("../../settings/cartpole/actor_critic.yaml"))
+                .unwrap();
 
         assert!(rlstudy::algorithms::ActorCritic::new(config).is_ok());
     }
@@ -244,22 +251,22 @@ mod tests {
     #[test]
     fn checked_in_vpg_config_parses() {
         let config: VanillaPolicyGradientConfig =
-            yaml_serde::from_str(include_str!("../../settings/vpg_for_cartpole.yaml")).unwrap();
+            yaml_serde::from_str(include_str!("../../settings/cartpole/vpg.yaml")).unwrap();
 
-        assert!(rlstudy::algorithms::PolicyGradient::vpg(config).is_ok());
+        assert!(rlstudy::algorithms::StochasticPolicyGradient::vpg(config).is_ok());
     }
 
     #[test]
     fn checked_in_ppo_config_parses() {
         let config: PpoConfig =
-            yaml_serde::from_str(include_str!("../../settings/ppo_for_cartpole.yaml")).unwrap();
-        assert!(rlstudy::algorithms::PolicyGradient::ppo(config).is_ok());
+            yaml_serde::from_str(include_str!("../../settings/cartpole/ppo.yaml")).unwrap();
+        assert!(rlstudy::algorithms::StochasticPolicyGradient::ppo(config).is_ok());
     }
 
     #[test]
     fn checked_in_approximate_td_config_parses() {
         let config: ApproximateTDConfig = yaml_serde::from_str(include_str!(
-            "../../settings/approximate_td_for_mountain_car.yaml"
+            "../../settings/mountain_car/approximate_td.yaml"
         ))
         .unwrap();
 
@@ -268,10 +275,9 @@ mod tests {
 
     #[test]
     fn checked_in_ddpg_config_parses() {
-        let config: DDPGConfig =
-            yaml_serde::from_str(include_str!("../../settings/ddpg_for_half_cheetah.yaml"))
-                .unwrap();
+        let config: DdpgConfig =
+            yaml_serde::from_str(include_str!("../../settings/half_cheetah/ddpg.yaml")).unwrap();
 
-        assert!(rlstudy::algorithms::DDPG::new(config).is_ok());
+        assert!(rlstudy::algorithms::DeterministicPolicyGradient::new(config.into()).is_ok());
     }
 }

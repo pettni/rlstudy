@@ -2,20 +2,19 @@ use crate::algorithms::{ModelFreeSolver, SolveResult, SolveStatus, validate_gamm
 use crate::environment::{Environment, Space};
 use crate::policy::{Policy, PolicyObjective, TabularPolicy};
 use crate::reporting::{Reporter, Step};
-use clap::Args;
 use ndarray::Array2;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, PartialEq, Args, Deserialize, Serialize)]
+mod cli;
+
+pub use cli::MonteCarloArgs;
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct MonteCarloConfig {
-    #[arg(long, default_value_t = MonteCarloConfig::default().gamma)]
     pub gamma: f64,
-    #[arg(long, default_value_t = MonteCarloConfig::default().episodes)]
     pub episodes: usize,
-    #[arg(long, default_value_t = MonteCarloConfig::default().episode_length)]
     pub episode_length: usize,
-    #[arg(long, default_value_t = MonteCarloConfig::default().epsilon)]
     pub epsilon: f64,
 }
 

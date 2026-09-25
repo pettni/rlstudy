@@ -2,10 +2,10 @@ use crate::algorithms::{ModelFreeSolver, SolveResult, SolveStatus};
 use crate::backend::{TrainingBackend, device};
 use crate::environment::{Environment, Space};
 use crate::network::{
+    AdamOptimizer, MlpModel, MlpSettings,
     action::ActionType,
     actor::{Actor, CategoricalActor},
     gradient_norm,
-    mlp::{Activation, MlpModel},
 };
 use crate::policy::Policy;
 use crate::reporting::{Reporter, Step};
@@ -14,46 +14,44 @@ use burn::tensor::ElementConversion;
 use burn::{
     Tensor,
     module::AutodiffModule,
-    optim::{Adam, AdamConfig, GradientsParams, Optimizer, adaptor::OptimizerAdaptor},
+    optim::{AdamConfig, GradientsParams, Optimizer},
     tensor::{TensorData, backend::Backend},
 };
-use clap::Args;
 use ndarray::Array1;
 use rand::RngExt;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, PartialEq, Args, Deserialize, Serialize)]
+mod cli;
+
+pub use cli::ActorCriticArgs;
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ActorCriticConfig {
-    #[arg(long, default_value_t = ActorCriticConfig::default().gamma)]
     pub gamma: f64,
-    #[arg(long, default_value = "linear:0.001:0.0001:999")]
-    pub actor_learning_rate: Schedule,
-    #[arg(long, default_value = "linear:0.001:0.0001:999")]
-    pub critic_learning_rate: Schedule,
-    #[arg(long, default_value_t = ActorCriticConfig::default().hidden_dims)]
-    pub hidden_dims: usize,
-    #[arg(long, default_value_t = ActorCriticConfig::default().episodes)]
+    pub pi_network: MlpSettings,
+    pub v_network: MlpSettings,
     pub episodes: usize,
-    #[arg(long, default_value_t = ActorCriticConfig::default().episode_length)]
     pub episode_length: usize,
 }
 
 impl Default for ActorCriticConfig {
     fn default() -> Self {
+        let learning_rate = Schedule::Linear {
+            initial: 0.001,
+            final_value: 0.0001,
+            steps: 999,
+        };
         Self {
             gamma: 0.9,
-            actor_learning_rate: Schedule::Linear {
-                initial: 0.001,
-                final_value: 0.0001,
-                steps: 999,
+            pi_network: MlpSettings {
+                learning_rate: learning_rate.clone(),
+                ..MlpSettings::default()
             },
-            critic_learning_rate: Schedule::Linear {
-                initial: 0.001,
-                final_value: 0.0001,
-                steps: 999,
+            v_network: MlpSettings {
+                learning_rate,
+                ..MlpSettings::default()
             },
-            hidden_dims: 64,
             episodes: 1_000,
             episode_length: 100,
         }
@@ -70,7 +68,10 @@ impl ActorCritic {
             return Err("gamma must be finite and in [0, 1]".into());
         }
         let valid_rate = |rate: f64| rate.is_finite() && rate > 0.0 && rate <= 1.0;
-        for schedule in [&config.actor_learning_rate, &config.critic_learning_rate] {
+        for schedule in [
+            &config.pi_network.learning_rate,
+            &config.v_network.learning_rate,
+        ] {
             let valid = match schedule {
                 Schedule::Constant { value } => valid_rate(*value),
                 Schedule::Linear {
@@ -95,7 +96,10 @@ impl ActorCritic {
                 );
             }
         }
-        if config.hidden_dims == 0 {
+        if [&config.pi_network, &config.v_network]
+            .into_iter()
+            .any(|network| network.hidden_dims.is_empty() || network.hidden_dims.contains(&0))
+        {
             return Err("hidden dims must be positive".into());
         }
         if config.episodes == 0 || config.episode_length == 0 {
@@ -125,22 +129,17 @@ impl ModelFreeSolver for ActorCritic {
 
         <TrainingBackend as Backend>::seed(device(), rng.random());
 
-        let mut pi_optimizer: OptimizerAdaptor<
-            Adam,
-            CategoricalActor<TrainingBackend>,
-            TrainingBackend,
-        > = AdamConfig::new().init();
-        let mut v_optimizer: OptimizerAdaptor<Adam, MlpModel<TrainingBackend>, TrainingBackend> =
-            AdamConfig::new().init();
-
         let mut pi = CategoricalActor::new(
             n_s,
-            &[self.config.hidden_dims],
+            &self.config.pi_network.hidden_dims,
             n_a,
-            Activation::Relu,
+            self.config.pi_network.activation,
             device(),
         );
-        let mut v = MlpModel::new(n_s, self.config.hidden_dims, 1, device());
+        let mut pi_optimizer: AdamOptimizer<CategoricalActor<TrainingBackend>> =
+            AdamConfig::new().init();
+        let mut v = self.config.v_network.init(n_s, 1);
+        let mut v_optimizer: AdamOptimizer<MlpModel<TrainingBackend>> = AdamConfig::new().init();
 
         for episode_index in 0..self.config.episodes {
             let mut state = env.reset(rng);
@@ -149,8 +148,8 @@ impl ModelFreeSolver for ActorCritic {
             let mut entropy_sum = 0.0;
             let mut actor_gradient_norm_sum = 0.0;
             let mut critic_gradient_norm_sum = 0.0;
-            let actor_learning_rate = self.config.actor_learning_rate.value(episode_index);
-            let critic_learning_rate = self.config.critic_learning_rate.value(episode_index);
+            let actor_learning_rate = self.config.pi_network.learning_rate.value(episode_index);
+            let critic_learning_rate = self.config.v_network.learning_rate.value(episode_index);
             for t in 0..self.config.episode_length {
                 let action = pi.sample_action(&state, rng);
                 let step = env.step(action, rng);
@@ -245,7 +244,10 @@ mod tests {
         );
         assert!(
             ActorCritic::new(ActorCriticConfig {
-                actor_learning_rate: Schedule::Constant { value: 0.0 },
+                pi_network: MlpSettings {
+                    learning_rate: Schedule::Constant { value: 0.0 },
+                    ..MlpSettings::default()
+                },
                 ..ActorCriticConfig::default()
             })
             .is_err()

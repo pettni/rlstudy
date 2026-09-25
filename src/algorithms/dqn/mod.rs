@@ -1,10 +1,12 @@
+mod cli;
 mod trainer;
 
+pub use self::cli::DqnArgs;
 use self::trainer::DqnTrainer;
 use crate::algorithms::{ModelFreeSolver, SolveResult, SolveStatus, validate_gamma};
 use crate::environment::{Environment, Rollout, Space};
+use crate::network::MlpSettings;
 pub use crate::network::loss::Loss;
-use crate::network::{MlpSettings, mlp::Activation};
 use crate::policy::{
     DiscretePolicy,
     dq::{DeepQPolicy, DeepQPolicyMode},
@@ -13,7 +15,7 @@ use crate::policy::{
 use crate::reporting::{Reporter, Step};
 pub use crate::schedule::Schedule;
 use crate::transition_buffer::TransitionBuffer;
-use clap::{Args, ValueEnum};
+use clap::ValueEnum;
 use ndarray::Array1;
 use rand::RngExt;
 use serde::{Deserialize, Serialize};
@@ -94,64 +96,6 @@ impl Default for DqnConfig {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Args)]
-pub struct DqnArgs {
-    #[arg(long, value_enum, default_value_t = DqnConfig::default().mode)]
-    mode: DqnMode,
-    #[arg(long, default_value_t = DqnConfig::default().gamma)]
-    gamma: f64,
-    #[arg(long)]
-    learning_rate: Option<Schedule>,
-    #[arg(long, value_delimiter = ',')]
-    hidden_dims: Option<Vec<usize>>,
-    #[arg(long, value_enum)]
-    activation: Option<Activation>,
-    #[arg(long, default_value_t = DqnConfig::default().batch_size)]
-    batch_size: usize,
-    #[arg(long, default_value_t = DqnConfig::default().replay_capacity)]
-    replay_capacity: usize,
-    #[arg(long, default_value_t = DqnConfig::default().warm_up_transitions)]
-    warm_up_transitions: usize,
-    #[arg(long, default_value_t = DqnConfig::default().episodes)]
-    episodes: usize,
-    #[arg(long)]
-    episode_length: Option<usize>,
-    #[arg(long)]
-    epsilon_schedule: Option<Schedule>,
-    #[arg(long)]
-    target_update: Option<TargetUpdateConfig>,
-    #[arg(long, value_enum, default_value_t = DqnConfig::default().loss)]
-    loss: Loss,
-    #[arg(long)]
-    gradient_clip_value: Option<f32>,
-}
-
-impl From<DqnArgs> for DqnConfig {
-    fn from(args: DqnArgs) -> Self {
-        let defaults = Self::default();
-        Self {
-            mode: args.mode,
-            gamma: args.gamma,
-            q_network: MlpSettings {
-                learning_rate: args
-                    .learning_rate
-                    .unwrap_or(defaults.q_network.learning_rate),
-                hidden_dims: args.hidden_dims.unwrap_or(defaults.q_network.hidden_dims),
-                activation: args.activation.unwrap_or(defaults.q_network.activation),
-            },
-            batch_size: args.batch_size,
-            replay_capacity: args.replay_capacity,
-            warm_up_transitions: args.warm_up_transitions,
-            episodes: args.episodes,
-            episode_length: args.episode_length,
-            epsilon_schedule: args.epsilon_schedule.unwrap_or_default(),
-            target_update: args.target_update.unwrap_or_default(),
-            loss: args.loss,
-            gradient_clip_value: args.gradient_clip_value,
-        }
-    }
-}
-
 /// Deep Q learning algorithm using a Burn network.
 pub struct DeepQLearning {
     config: DqnConfig,
@@ -209,8 +153,7 @@ impl ModelFreeSolver for DeepQLearning {
 
         let mut trainer = DqnTrainer::new(
             f_dim,
-            &self.config.q_network.hidden_dims,
-            self.config.q_network.activation,
+            &self.config.q_network,
             n_a,
             self.config.gradient_clip_value,
             self.config.mode,

@@ -4,13 +4,12 @@ use crate::backend::{TrainingBackend, device};
 use crate::environment::{Environment, Rollout, Space};
 use crate::network::action::ActionType;
 use crate::network::actor::{Actor, CategoricalActor, GaussianActor};
-use crate::network::gradient_norm;
-use crate::network::mlp::{Activation, MlpModel};
+use crate::network::{AdamOptimizer, MlpModel, MlpSettings, gradient_norm};
 use crate::reporting::{MetricAverages, Reporter, Step};
 use crate::schedule::Schedule;
 use crate::transition_buffer::TransitionBuffer;
 use burn::{
-    optim::{Adam, AdamConfig, GradientsParams, Optimizer, adaptor::OptimizerAdaptor},
+    optim::{AdamConfig, GradientsParams, Optimizer},
     tensor::{ElementConversion, backend::Backend},
 };
 use ndarray::Array1;
@@ -51,22 +50,20 @@ pub(super) struct PolicyGradientConfig {
     pub(super) objective: PolicyObjective,
     pub(super) gamma: f64,
     pub(super) lambda: f64,
-    pub(super) pi_learning_rate: Schedule,
-    pub(super) v_learning_rate: Schedule,
-    pub(super) hidden_dims: Vec<usize>,
-    pub(super) activation: Activation,
+    pub(super) pi_network: MlpSettings,
+    pub(super) v_network: MlpSettings,
     pub(super) epochs: usize,
     pub(super) steps_per_epoch: usize,
     pub(super) policy_update_strategy: PolicyUpdateStrategy,
     pub(super) value_updates_per_epoch: usize,
 }
 
-pub struct PolicyGradient<Action = usize> {
+pub struct StochasticPolicyGradient<Action = usize> {
     config: PolicyGradientConfig,
     action: PhantomData<Action>,
 }
 
-impl PolicyGradient<usize> {
+impl StochasticPolicyGradient<usize> {
     pub fn vpg(config: VanillaPolicyGradientConfig) -> Result<Self, String> {
         Self::new(config.into())
     }
@@ -82,7 +79,10 @@ impl PolicyGradient<usize> {
         if !config.lambda.is_finite() || !(0.0..=1.0).contains(&config.lambda) {
             return Err("lambda must be finite and in [0, 1]".into());
         }
-        if config.hidden_dims.is_empty() || config.hidden_dims.contains(&0) {
+        if [&config.pi_network, &config.v_network]
+            .into_iter()
+            .any(|network| network.hidden_dims.is_empty() || network.hidden_dims.contains(&0))
+        {
             return Err("hidden dims must be positive".into());
         }
         if config.epochs == 0 || config.steps_per_epoch == 0 || config.value_updates_per_epoch == 0
@@ -100,33 +100,27 @@ impl PolicyGradient<usize> {
         })
     }
 
-    pub fn continuous(self) -> PolicyGradient<Array1<f64>> {
-        PolicyGradient {
+    pub fn continuous(self) -> StochasticPolicyGradient<Array1<f64>> {
+        StochasticPolicyGradient {
             config: self.config,
             action: PhantomData,
         }
     }
 }
 
-impl<Action> PolicyGradient<Action> {
+impl<Action> StochasticPolicyGradient<Action> {
     fn train<A: ActionType, P: Actor<A>>(
         &self,
         env: &mut dyn Environment<Observation = Array1<f64>, Action = A>,
         rng: &mut dyn rand::Rng,
         reporter: &mut Reporter<'_, Array1<f64>, A>,
-        mut pi: P,
+        pi: P,
         n_s: usize,
     ) -> (P::InferencePolicy, SolveStatus) {
-        let mut pi_optimizer: OptimizerAdaptor<Adam, P, TrainingBackend> = AdamConfig::new().init();
-        let mut v_optimizer: OptimizerAdaptor<Adam, MlpModel<TrainingBackend>, TrainingBackend> =
-            AdamConfig::new().init();
-        let mut v = MlpModel::new_with_hidden_layers(
-            n_s,
-            &self.config.hidden_dims,
-            1,
-            self.config.activation,
-            device(),
-        );
+        let mut pi = pi;
+        let mut pi_optimizer: AdamOptimizer<P> = AdamConfig::new().init();
+        let mut v = self.config.v_network.init(n_s, 1);
+        let mut v_optimizer: AdamOptimizer<MlpModel<TrainingBackend>> = AdamConfig::new().init();
 
         let mut buffer = TransitionBuffer::<A>::with_capacity(self.config.steps_per_epoch, None);
         let mut rollout = Rollout::new(env, rng);
@@ -134,8 +128,8 @@ impl<Action> PolicyGradient<Action> {
         for epoch in 0..self.config.epochs {
             let step = Step::Epoch(epoch + 1);
             reporter.progress(step, self.config.epochs);
-            let pi_learning_rate = self.config.pi_learning_rate.value(epoch);
-            let v_learning_rate = self.config.v_learning_rate.value(epoch);
+            let pi_learning_rate = self.config.pi_network.learning_rate.value(epoch);
+            let v_learning_rate = self.config.v_network.learning_rate.value(epoch);
 
             buffer.clear();
             buffer.fill_n_actor(self.config.steps_per_epoch, &mut rollout, &pi, rng);
@@ -250,7 +244,7 @@ impl<Action> PolicyGradient<Action> {
     }
 }
 
-impl ModelFreeSolver for PolicyGradient {
+impl ModelFreeSolver for StochasticPolicyGradient {
     type Observation = Array1<f64>;
     type Action = usize;
 
@@ -271,9 +265,9 @@ impl ModelFreeSolver for PolicyGradient {
         <TrainingBackend as Backend>::seed(device(), rng.random());
         let pi = CategoricalActor::new(
             n_s,
-            &self.config.hidden_dims,
+            &self.config.pi_network.hidden_dims,
             n_a,
-            self.config.activation,
+            self.config.pi_network.activation,
             device(),
         );
         let (pi, status) = self.train(env, rng, reporter, pi, n_s);
@@ -284,7 +278,7 @@ impl ModelFreeSolver for PolicyGradient {
     }
 }
 
-impl ModelFreeSolver for PolicyGradient<Array1<f64>> {
+impl ModelFreeSolver for StochasticPolicyGradient<Array1<f64>> {
     type Observation = Array1<f64>;
     type Action = Array1<f64>;
 
@@ -306,9 +300,9 @@ impl ModelFreeSolver for PolicyGradient<Array1<f64>> {
         <TrainingBackend as Backend>::seed(device(), rng.random());
         let pi = GaussianActor::new(
             n_s,
-            &self.config.hidden_dims,
+            &self.config.pi_network.hidden_dims,
             n_a,
-            self.config.activation,
+            self.config.pi_network.activation,
             device(),
         );
         let (pi, status) = self.train(env, rng, reporter, pi, n_s);
@@ -359,8 +353,15 @@ mod tests {
 
     #[test]
     fn trains_with_continuous_actions() {
-        let solver = PolicyGradient::vpg(VanillaPolicyGradientConfig {
-            hidden_dims: vec![4],
+        let solver = StochasticPolicyGradient::vpg(VanillaPolicyGradientConfig {
+            pi_network: MlpSettings {
+                hidden_dims: vec![4],
+                ..MlpSettings::default()
+            },
+            v_network: MlpSettings {
+                hidden_dims: vec![4],
+                ..MlpSettings::default()
+            },
             epochs: 1,
             steps_per_epoch: 8,
             value_updates_per_epoch: 1,

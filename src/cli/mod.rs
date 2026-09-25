@@ -242,9 +242,12 @@ fn run_solver(
             };
             Ok((SelectedResult::Neural(result, history), stats))
         }
-        SelectedSolver::Ddpg(solver) => {
+        SelectedSolver::Ddpg(solver) | SelectedSolver::Td3(solver) => {
             let SelectedSystem::ContinuousGym(environment) = system else {
-                return Err("DDPG requires a continuous-action Gym environment".into());
+                return Err(
+                    "Deterministic policy gradient requires a continuous-action Gym environment"
+                        .into(),
+                );
             };
             let mut evaluation_environment =
                 continuous_gym(gym_id.expect("Gym ID is present"), gym_options)?;
@@ -552,7 +555,7 @@ struct VisualizationResult<'a> {
 mod tests {
     use super::*;
     use rlstudy::algorithms::{
-        ActorCriticConfig, ApproximateTDConfig, DDPGConfig, DqnConfig, MonteCarloConfig, PpoConfig,
+        ActorCriticConfig, ApproximateTDConfig, DdpgConfig, DqnConfig, MonteCarloConfig, PpoConfig,
         ReinforceConfig, TDConfig, ValueIterationConfig, VanillaPolicyGradientConfig,
     };
 
@@ -569,6 +572,7 @@ mod tests {
         let Solver::VI(config) = solver(&["solve", "vi"]) else {
             unreachable!()
         };
+        let config: ValueIterationConfig = config.into();
         assert_eq!(
             config,
             yaml_serde::from_str::<ValueIterationConfig>("{}").unwrap()
@@ -576,6 +580,7 @@ mod tests {
         let Solver::MC(config) = solver(&["solve", "mc"]) else {
             unreachable!()
         };
+        let config: MonteCarloConfig = config.into();
         assert_eq!(
             config,
             yaml_serde::from_str::<MonteCarloConfig>("{}").unwrap()
@@ -583,6 +588,7 @@ mod tests {
         let Solver::TD(config) = solver(&["solve", "td"]) else {
             unreachable!()
         };
+        let config: TDConfig = config.into();
         assert_eq!(config, yaml_serde::from_str::<TDConfig>("{}").unwrap());
         let Solver::Dqn(config) = solver(&["solve", "dqn"]) else {
             unreachable!()
@@ -592,11 +598,12 @@ mod tests {
         let Solver::Ddpg(config) = solver(&["solve", "ddpg"]) else {
             unreachable!()
         };
-        let config: DDPGConfig = config.into();
-        assert_eq!(config, yaml_serde::from_str::<DDPGConfig>("{}").unwrap());
+        let config: DdpgConfig = config.into();
+        assert_eq!(config, yaml_serde::from_str::<DdpgConfig>("{}").unwrap());
         let Solver::Reinforce(config) = solver(&["solve", "reinforce"]) else {
             unreachable!()
         };
+        let config: ReinforceConfig = config.into();
         assert_eq!(
             config,
             yaml_serde::from_str::<ReinforceConfig>("{}").unwrap()
@@ -604,6 +611,7 @@ mod tests {
         let Solver::Vpg(config) = solver(&["solve", "vpg"]) else {
             unreachable!()
         };
+        let config: VanillaPolicyGradientConfig = config.into();
         assert_eq!(
             config,
             yaml_serde::from_str::<VanillaPolicyGradientConfig>("{}").unwrap()
@@ -611,10 +619,12 @@ mod tests {
         let Solver::Ppo(config) = solver(&["solve", "ppo"]) else {
             unreachable!()
         };
+        let config: PpoConfig = config.into();
         assert_eq!(config, yaml_serde::from_str::<PpoConfig>("{}").unwrap());
         let Solver::ActorCritic(config) = solver(&["solve", "actor-critic"]) else {
             unreachable!()
         };
+        let config: ActorCriticConfig = config.into();
         assert_eq!(
             config,
             yaml_serde::from_str::<ActorCriticConfig>("{}").unwrap()

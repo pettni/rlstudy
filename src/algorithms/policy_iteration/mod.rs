@@ -2,19 +2,19 @@ use crate::algorithms::{ModelBasedSolver, SolveResult, SolveStatus, validate_gam
 use crate::model::TabularModel;
 use crate::policy::TabularPolicy;
 use crate::reporting::{Reporter, Step};
-use clap::Args;
 use ndarray::{Array1, Array2, Array3};
 use num_traits::abs;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, PartialEq, Args, Deserialize, Serialize)]
+mod cli;
+
+pub use cli::{PolicyIterationArgs, TruncatedPolicyIterationArgs, ValueIterationArgs};
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ValueIterationConfig {
-    #[arg(long, default_value_t = ValueIterationConfig::default().gamma)]
     pub gamma: f64,
-    #[arg(long)]
     pub tolerance: Option<f64>,
-    #[arg(long)]
     pub max_iterations: Option<usize>,
 }
 
@@ -28,14 +28,11 @@ impl Default for ValueIterationConfig {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Args, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct PolicyIterationConfig {
-    #[arg(long, default_value_t = PolicyIterationConfig::default().gamma)]
     pub gamma: f64,
-    #[arg(long)]
     pub tolerance: Option<f64>,
-    #[arg(long)]
     pub max_iterations: Option<usize>,
 }
 
@@ -49,18 +46,13 @@ impl Default for PolicyIterationConfig {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Args, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct TruncatedPolicyIterationConfig {
-    #[arg(long, default_value_t = TruncatedPolicyIterationConfig::default().gamma)]
     pub gamma: f64,
-    #[arg(long)]
     pub outer_tolerance: Option<f64>,
-    #[arg(long)]
     pub outer_max_iterations: Option<usize>,
-    #[arg(long)]
     pub inner_tolerance: Option<f64>,
-    #[arg(long)]
     pub inner_max_iterations: Option<usize>,
 }
 

@@ -6,7 +6,7 @@ use ndarray::Array1;
 use super::DiscretePolicy;
 use crate::{
     backend::{Device, device},
-    network::mlp::MlpModel,
+    network::MlpModel,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -91,12 +91,12 @@ fn greedy_action(q_a: &Array1<f64>) -> usize {
 mod tests {
     use super::*;
     use crate::backend::{InferenceBackend, device};
-    use crate::network::mlp::MlpModel;
+    use crate::network::{Activation, MlpModel};
 
     #[test]
     fn action_probabilities_are_a_distribution() {
         let policy = DeepQPolicy::new(
-            MlpModel::<InferenceBackend>::new(2, 4, 3, device()),
+            MlpModel::<InferenceBackend>::new(2, &[4], 3, Activation::Relu, device()),
             DeepQPolicyMode::SoftMax,
         );
 
@@ -109,7 +109,7 @@ mod tests {
 
     #[test]
     fn greedy_modes_are_distributions() {
-        let network = MlpModel::<InferenceBackend>::new(2, 4, 3, device());
+        let network = MlpModel::<InferenceBackend>::new(2, &[4], 3, Activation::Relu, device());
         let observation = Array1::from_vec(vec![1.0, 2.0]);
         let greedy = DeepQPolicy::new(network.clone(), DeepQPolicyMode::Greedy)
             .action_probabilities(&observation);

@@ -7,7 +7,7 @@ use rand_distr::{Distribution, StandardNormal};
 
 use super::Actor;
 use crate::backend::{Device, InferenceBackend, TrainingBackend, device};
-use crate::network::mlp::{Activation, MlpModel};
+use crate::network::{Activation, MlpModel};
 use crate::policy::Policy;
 
 #[derive(Module, Debug)]
@@ -25,13 +25,7 @@ impl<B: Backend> GaussianActor<B> {
         device: &B::Device,
     ) -> Self {
         Self {
-            mu_mlp: MlpModel::new_with_hidden_layers(
-                state_dim,
-                hidden_dims,
-                action_dim,
-                activation,
-                device,
-            ),
+            mu_mlp: MlpModel::new(state_dim, hidden_dims, action_dim, activation, device),
             log_std: Param::from_tensor(Tensor::full([action_dim], -0.5, device)),
         }
     }
