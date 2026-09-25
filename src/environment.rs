@@ -6,7 +6,30 @@ use ndarray::Array1;
 #[derive(Debug, Clone, PartialEq)]
 pub enum Space {
     Discrete { size: usize },
-    Continuous { dim: usize },
+    Continuous { low: Array1<f64>, high: Array1<f64> },
+}
+
+impl Space {
+    pub fn unbounded(dim: usize) -> Self {
+        Self::Continuous {
+            low: Array1::from_elem(dim, f64::NEG_INFINITY),
+            high: Array1::from_elem(dim, f64::INFINITY),
+        }
+    }
+
+    pub fn continuous_dim(&self) -> Option<usize> {
+        match self {
+            Self::Continuous { low, .. } => Some(low.len()),
+            Self::Discrete { .. } => None,
+        }
+    }
+
+    pub fn into_continuous_bounds(self) -> Option<(Array1<f64>, Array1<f64>)> {
+        match self {
+            Self::Continuous { low, high } => Some((low, high)),
+            Self::Discrete { .. } => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -142,7 +165,7 @@ impl Environment for FeatureEnvironment<'_> {
     type Action = usize;
 
     fn state_space(&self) -> Space {
-        Space::Continuous { dim: self.dim }
+        Space::unbounded(self.dim)
     }
 
     fn action_space(&self) -> Space {
@@ -269,7 +292,7 @@ mod tests {
         let mut rng = StdRng::seed_from_u64(0);
 
         assert_eq!(environment.reset(&mut rng).to_vec(), vec![1.0, 2.0]);
-        assert_eq!(environment.state_space(), Space::Continuous { dim: 2 });
+        assert_eq!(environment.state_space(), Space::unbounded(2));
     }
 
     #[test]

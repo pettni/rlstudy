@@ -3,6 +3,7 @@
 use crate::backend::{TrainingBackend, device};
 use crate::environment::{Environment, Rollout};
 use crate::network::action::ActionType;
+use crate::network::actor::Actor;
 use crate::policy::Policy;
 use burn::{
     Tensor,
@@ -91,11 +92,16 @@ impl<A: ActionType> TransitionBufferTensorData<A> {
 pub struct Transition<A> {
     pub s: ndarray::Array1<f64>,
     pub a: A,
-    pub log_pi_a_s: f64,
+    pub log_pi_a_s: Option<f64>,
     pub r: f64,
     pub sp: ndarray::Array1<f64>,
     pub terminated: bool,
     pub truncated: bool,
+}
+
+struct ActionSample<A> {
+    action: A,
+    log_prob: Option<f64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -178,6 +184,87 @@ impl<A> TransitionBuffer<A> {
         self.transitions.push_back(transition);
     }
 
+    pub fn truncate_episode<E>(&mut self, rollout: &mut Rollout<'_, E>, rng: &mut dyn rand::Rng)
+    where
+        E: Environment<Observation = Array1<f64>, Action = A> + ?Sized,
+    {
+        self.transitions
+            .back_mut()
+            .expect("an episode step was just added")
+            .truncated = true;
+        rollout.reset(rng);
+    }
+
+    fn fill_one_with<E>(
+        &mut self,
+        rollout: &mut Rollout<'_, E>,
+        rng: &mut dyn rand::Rng,
+        sample: impl FnOnce(&Array1<f64>, &mut dyn rand::Rng) -> ActionSample<A>,
+    ) -> &Transition<A>
+    where
+        A: Clone,
+        E: Environment<Observation = Array1<f64>, Action = A> + ?Sized,
+    {
+        let s = rollout.observation().clone();
+        let sample = sample(&s, rng);
+        let step = rollout.step(sample.action.clone(), rng);
+        let episode_ended = step.terminated || step.truncated;
+
+        self.push(Transition {
+            s,
+            a: sample.action,
+            log_pi_a_s: sample.log_prob,
+            r: step.reward,
+            sp: step.observation,
+            terminated: step.terminated,
+            truncated: step.truncated,
+        });
+
+        if episode_ended {
+            rollout.reset(rng);
+        }
+
+        self.transitions.back().expect("transition was just added")
+    }
+
+    fn fill_with<E>(
+        &mut self,
+        n: usize,
+        rollout: &mut Rollout<'_, E>,
+        rng: &mut dyn rand::Rng,
+        mut sample: impl FnMut(&Array1<f64>, &mut dyn rand::Rng) -> ActionSample<A>,
+    ) where
+        A: Clone,
+        E: Environment<Observation = Array1<f64>, Action = A> + ?Sized,
+    {
+        for _ in 0..n {
+            self.fill_one_with(rollout, rng, &mut sample);
+        }
+    }
+
+    fn fill_episode_with<E>(
+        &mut self,
+        rollout: &mut Rollout<'_, E>,
+        rng: &mut dyn rand::Rng,
+        max_steps: Option<usize>,
+        mut sample: impl FnMut(&Array1<f64>, &mut dyn rand::Rng) -> ActionSample<A>,
+    ) where
+        A: Clone,
+        E: Environment<Observation = Array1<f64>, Action = A> + ?Sized,
+    {
+        let steps = max_steps.unwrap_or(usize::MAX);
+        for _ in 0..steps {
+            let transition = self.fill_one_with(rollout, rng, &mut sample);
+            if transition.terminated || transition.truncated {
+                return;
+            }
+        }
+
+        if max_steps.is_some() && steps > 0 {
+            self.truncate_episode(rollout, rng);
+        }
+    }
+
     /// Take one environment step and return the transition added to the buffer.
     pub fn fill_one<E, P>(
         &mut self,
@@ -190,62 +277,106 @@ impl<A> TransitionBuffer<A> {
         E: Environment<Observation = Array1<f64>, Action = A> + ?Sized,
         P: Policy<Observation = Array1<f64>, Action = A> + ?Sized,
     {
-        let s = rollout.observation().clone();
-        let action_sample = pi.sample_action_with_log_prob(&s, rng);
-        let step = rollout.step(action_sample.action.clone(), rng);
-
-        self.push(Transition {
-            s,
-            a: action_sample.action,
-            log_pi_a_s: action_sample.log_prob,
-            r: step.reward,
-            sp: step.observation,
-            terminated: step.terminated,
-            truncated: step.truncated,
-        });
-
+        self.fill_n(1, rollout, pi, rng);
         self.transitions.back().expect("transition was just added")
     }
 
-    /// Fill the buffer with one complete episode.
-    pub fn fill_episode<P>(
-        &mut self,
-        env: &mut dyn Environment<Observation = Array1<f64>, Action = A>,
-        pi: &P,
-        rng: &mut dyn rand::Rng,
-    ) where
-        A: Clone,
-        P: Policy<Observation = Array1<f64>, Action = A> + ?Sized,
-    {
-        let mut rollout = Rollout::new(env, rng);
-
-        loop {
-            let transition = self.fill_one(&mut rollout, pi, rng);
-            if transition.terminated || transition.truncated {
-                break;
-            }
-        }
-    }
-
-    /// Fill the buffer with data from stepping the environment n times.
-    /// Resets the environment when episodes finish.
-    pub fn fill<E, P>(
+    /// Take one environment with actor and return the transition added to the buffer.
+    pub fn fill_one_actor<E, P>(
         &mut self,
         rollout: &mut Rollout<'_, E>,
         pi: &P,
         rng: &mut dyn rand::Rng,
-        n: usize,
+    ) -> &Transition<A>
+    where
+        A: Clone + ActionType,
+        E: Environment<Observation = Array1<f64>, Action = A> + ?Sized,
+        P: Actor<A> + ?Sized,
+    {
+        self.fill_n_actor(1, rollout, pi, rng);
+        self.transitions.back().expect("transition was just added")
+    }
+
+    /// Fill the buffer with one complete episode.
+    pub fn fill_episode<E, P>(
+        &mut self,
+        rollout: &mut Rollout<'_, E>,
+        pi: &P,
+        rng: &mut dyn rand::Rng,
+        max_steps: Option<usize>,
     ) where
         A: Clone,
         E: Environment<Observation = Array1<f64>, Action = A> + ?Sized,
         P: Policy<Observation = Array1<f64>, Action = A> + ?Sized,
     {
-        for _ in 0..n {
-            let transition = self.fill_one(rollout, pi, rng);
-            if transition.terminated || transition.truncated {
-                rollout.reset(rng);
+        self.fill_episode_with(rollout, rng, max_steps, |s, rng| ActionSample {
+            action: pi.sample_action(s, rng),
+            log_prob: None,
+        });
+    }
+
+    /// Fill the buffer with one complete episode sampled from an actor.
+    pub fn fill_episode_actor<E, P>(
+        &mut self,
+        rollout: &mut Rollout<'_, E>,
+        pi: &P,
+        rng: &mut dyn rand::Rng,
+        max_steps: Option<usize>,
+    ) where
+        A: Clone + ActionType,
+        E: Environment<Observation = Array1<f64>, Action = A> + ?Sized,
+        P: Actor<A> + ?Sized,
+    {
+        self.fill_episode_with(rollout, rng, max_steps, |s, rng| {
+            let action = pi.sample_action(s, rng);
+            let log_prob = pi.log_prob(s, &action);
+            ActionSample {
+                action,
+                log_prob: Some(log_prob),
             }
-        }
+        });
+    }
+
+    /// Fill the buffer with data from stepping the environment n times.
+    /// Resets the environment when episodes finish.
+    pub fn fill_n<E, P>(
+        &mut self,
+        n: usize,
+        rollout: &mut Rollout<'_, E>,
+        pi: &P,
+        rng: &mut dyn rand::Rng,
+    ) where
+        A: Clone,
+        E: Environment<Observation = Array1<f64>, Action = A> + ?Sized,
+        P: Policy<Observation = Array1<f64>, Action = A> + ?Sized,
+    {
+        self.fill_with(n, rollout, rng, |s, rng| ActionSample {
+            action: pi.sample_action(s, rng),
+            log_prob: None,
+        });
+    }
+
+    /// Fill the buffer with data from an actor stepping the environment n times.
+    /// Resets the environment when episodes finish.
+    pub fn fill_n_actor<E, P>(
+        &mut self,
+        n: usize,
+        rollout: &mut Rollout<'_, E>,
+        pi: &P,
+        rng: &mut dyn rand::Rng,
+    ) where
+        A: Clone + ActionType,
+        E: Environment<Observation = Array1<f64>, Action = A> + ?Sized,
+        P: Actor<A> + ?Sized,
+    {
+        self.fill_with(n, rollout, rng, |s, rng| {
+            let action = pi.sample_action(s, rng);
+            let log_prob = pi.log_prob(s, &action);
+            ActionSample {
+                action,
+                log_prob: Some(log_prob),
+            }
+        });
     }
 
     /// Return all data in order
@@ -293,17 +424,21 @@ impl<A> TransitionBuffer<A> {
         for transition in transitions {
             states.extend(transition.s.iter().copied());
             actions.push(&transition.a);
-            log_probs.push(transition.log_pi_a_s);
+            if let Some(logprob) = transition.log_pi_a_s {
+                log_probs.push(logprob);
+            }
             rewards.push(transition.r);
             next_states.extend(transition.sp.iter().copied());
             terminated.push(transition.terminated);
             truncated.push(transition.truncated);
         }
 
+        let num_log_probs = log_probs.len();
+
         TransitionBufferTensorData::<A> {
             s: Tensor::from_data(TensorData::new(states, [size, state_dim]), device()),
             a: A::tensor_data(&actions),
-            log_probs: Tensor::from_data(TensorData::new(log_probs, [size]), device()),
+            log_probs: Tensor::from_data(TensorData::new(log_probs, [num_log_probs]), device()),
             r: Tensor::from_data(TensorData::new(rewards, [size]), device()),
             sp: Tensor::from_data(TensorData::new(next_states, [size, state_dim]), device()),
             truncated: Tensor::from_data(TensorData::new(truncated, [size]), device()),
@@ -374,7 +509,6 @@ fn discounts_from_episode_start(
 mod tests {
     use super::*;
     use crate::environment::{Space, Step};
-    use crate::policy::PolicySample;
     use rand::{SeedableRng, rngs::StdRng};
 
     struct TwoStepEnvironment {
@@ -386,7 +520,7 @@ mod tests {
         type Action = usize;
 
         fn state_space(&self) -> Space {
-            Space::Continuous { dim: 1 }
+            Space::unbounded(1)
         }
 
         fn action_space(&self) -> Space {
@@ -416,19 +550,8 @@ mod tests {
         type Observation = Array1<f64>;
         type Action = usize;
 
-        fn log_prob(&self, _observation: &Array1<f64>, action: &usize) -> f64 {
-            if *action == 0 { 0.0 } else { f64::NEG_INFINITY }
-        }
-
-        fn sample_action_with_log_prob(
-            &self,
-            _observation: &Array1<f64>,
-            _rng: &mut dyn rand::Rng,
-        ) -> PolicySample<usize> {
-            PolicySample {
-                action: 0,
-                log_prob: 0.0,
-            }
+        fn sample_action(&self, _observation: &Array1<f64>, _rng: &mut dyn rand::Rng) -> usize {
+            0
         }
     }
 
@@ -436,7 +559,7 @@ mod tests {
         Transition {
             s: Array1::zeros(1),
             a: 0,
-            log_pi_a_s: 0.0,
+            log_pi_a_s: Some(0.0),
             r: reward,
             sp: Array1::zeros(1),
             terminated: false,
@@ -454,7 +577,7 @@ mod tests {
         Transition {
             s: Array1::from_vec(vec![state_value]),
             a: 0,
-            log_pi_a_s: 0.0,
+            log_pi_a_s: Some(0.0),
             r: reward,
             sp: Array1::from_vec(vec![next_state_value]),
             terminated,
@@ -482,18 +605,22 @@ mod tests {
     }
 
     #[test]
-    fn consecutive_fills_continue_the_rollout() {
+    fn episode_fills_reset_after_termination_and_step_limit() {
         let mut buffer = TransitionBuffer::new(None);
         let mut environment = TwoStepEnvironment { state: None };
         let mut rng = StdRng::seed_from_u64(0);
         let mut rollout = Rollout::new(&mut environment, &mut rng);
 
-        buffer.fill(&mut rollout, &FixedPolicy, &mut rng, 1);
-        buffer.fill(&mut rollout, &FixedPolicy, &mut rng, 1);
+        buffer.fill_episode(&mut rollout, &FixedPolicy, &mut rng, None);
+        buffer.fill_episode(&mut rollout, &FixedPolicy, &mut rng, Some(1));
+        buffer.fill_n(1, &mut rollout, &FixedPolicy, &mut rng);
 
         assert_eq!(buffer.transitions[0].s, Array1::from_vec(vec![0.0]));
         assert_eq!(buffer.transitions[1].s, Array1::from_vec(vec![1.0]));
         assert!(buffer.transitions[1].terminated);
+        assert_eq!(buffer.transitions[2].s, Array1::from_vec(vec![0.0]));
+        assert!(buffer.transitions[2].truncated);
+        assert_eq!(buffer.transitions[3].s, Array1::from_vec(vec![0.0]));
     }
 
     #[test]

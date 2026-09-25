@@ -138,7 +138,7 @@ impl<Action> PolicyGradient<Action> {
             let v_learning_rate = self.config.v_learning_rate.value(epoch);
 
             buffer.clear();
-            buffer.fill(&mut rollout, &pi, rng, self.config.steps_per_epoch);
+            buffer.fill_n_actor(self.config.steps_per_epoch, &mut rollout, &pi, rng);
 
             let batch = buffer.tensor_data();
             let returns = batch
@@ -260,9 +260,10 @@ impl ModelFreeSolver for PolicyGradient {
         rng: &mut dyn rand::Rng,
         reporter: &mut Reporter<'_, Array1<f64>>,
     ) -> Result<SolveResult<Array1<f64>>, String> {
-        let Space::Continuous { dim: n_s } = env.state_space() else {
-            return Err("Policy gradient requires a continuous state space".into());
-        };
+        let n_s = env
+            .state_space()
+            .continuous_dim()
+            .ok_or("Policy gradient requires a continuous state space")?;
         let Space::Discrete { size: n_a } = env.action_space() else {
             return Err("Policy gradient requires a discrete action space".into());
         };
@@ -293,12 +294,14 @@ impl ModelFreeSolver for PolicyGradient<Array1<f64>> {
         rng: &mut dyn rand::Rng,
         reporter: &mut Reporter<'_, Array1<f64>, Array1<f64>>,
     ) -> Result<SolveResult<Array1<f64>, Array1<f64>>, String> {
-        let Space::Continuous { dim: n_s } = env.state_space() else {
-            return Err("Policy gradient requires a continuous state space".into());
-        };
-        let Space::Continuous { dim: n_a } = env.action_space() else {
-            return Err("Policy gradient requires a continuous action space".into());
-        };
+        let n_s = env
+            .state_space()
+            .continuous_dim()
+            .ok_or("Policy gradient requires a continuous state space")?;
+        let n_a = env
+            .action_space()
+            .continuous_dim()
+            .ok_or("Policy gradient requires a continuous action space")?;
 
         <TrainingBackend as Backend>::seed(device(), rng.random());
         let pi = GaussianActor::new(
@@ -329,11 +332,11 @@ mod tests {
         type Action = Array1<f64>;
 
         fn state_space(&self) -> Space {
-            Space::Continuous { dim: 1 }
+            Space::unbounded(1)
         }
 
         fn action_space(&self) -> Space {
-            Space::Continuous { dim: 1 }
+            Space::unbounded(1)
         }
 
         fn reset(&mut self, _rng: &mut dyn rand::Rng) -> Self::Observation {

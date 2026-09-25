@@ -1,38 +1,22 @@
 use ndarray::Array1;
 
+pub mod deterministic;
 pub mod dq;
 pub mod tabular;
 pub mod uniform;
 
 pub use tabular::{PolicyObjective, TabularPolicy};
 
-pub struct PolicySample<A> {
-    /// Sampled action
-    pub action: A,
-    /// Log probability log pi(a|s) of sampled action
-    pub log_prob: f64,
-}
-
 /// A policy maps observations to actions.
 pub trait Policy {
     type Observation;
     type Action;
 
-    fn log_prob(&self, observation: &Self::Observation, action: &Self::Action) -> f64;
-
     fn sample_action(
         &self,
         observation: &Self::Observation,
         rng: &mut dyn rand::Rng,
-    ) -> Self::Action {
-        self.sample_action_with_log_prob(observation, rng).action
-    }
-
-    fn sample_action_with_log_prob(
-        &self,
-        observation: &Self::Observation,
-        rng: &mut dyn rand::Rng,
-    ) -> PolicySample<Self::Action>;
+    ) -> Self::Action;
 }
 
 pub trait DiscretePolicy {
@@ -77,15 +61,7 @@ where
     type Observation = T::Observation;
     type Action = usize;
 
-    fn log_prob(&self, observation: &Self::Observation, action: &Self::Action) -> f64 {
-        self.action_probabilities(observation)[*action].ln()
-    }
-
-    fn sample_action_with_log_prob(
-        &self,
-        observation: &Self::Observation,
-        rng: &mut dyn rand::Rng,
-    ) -> PolicySample<usize> {
+    fn sample_action(&self, observation: &Self::Observation, rng: &mut dyn rand::Rng) -> usize {
         use rand::RngExt;
 
         let probabilities = &self.action_probabilities(observation);
@@ -95,15 +71,10 @@ where
         for (action, probability) in probabilities.iter().enumerate() {
             cumulative += probability;
             if sample < cumulative {
-                return PolicySample {
-                    action,
-                    log_prob: probability.ln(),
-                };
+                return action;
             }
         }
-        PolicySample {
-            action: probabilities.len() - 1,
-            log_prob: probabilities.last().expect("probabilities not empty").ln(),
-        }
+
+        probabilities.len() - 1
     }
 }

@@ -192,11 +192,11 @@ impl ModelFreeSolver for DeepQLearning {
 
         // fill up initial replay buffer
         let mut buffer = TransitionBuffer::new(Some(self.config.replay_capacity));
-        buffer.fill(
+        buffer.fill_n(
+            self.config.warm_up_transitions,
             &mut rollout,
             behavior_policy,
             rng,
-            self.config.warm_up_transitions,
         );
 
         let mut trainer = DqnTrainer::new(
@@ -209,7 +209,6 @@ impl ModelFreeSolver for DeepQLearning {
         );
         let mut iter = 0;
         for episode in 0..self.config.episodes {
-            rollout.reset(rng);
             let learning_rate = self.config.learning_rate.value(episode);
             let mut episode_return = 0.0;
             let mut episode_loss = 0.0;
@@ -242,12 +241,11 @@ impl ModelFreeSolver for DeepQLearning {
                 iter += 1;
                 episode_loss += loss;
                 episode_gradient_norm += gradient_norm;
-                if done
-                    || self
-                        .config
-                        .episode_length
-                        .is_some_and(|length| step_index + 1 == length)
-                {
+                if done {
+                    break;
+                }
+                if self.config.episode_length == Some(step_index + 1) {
+                    buffer.truncate_episode(&mut rollout, rng);
                     break;
                 }
             }

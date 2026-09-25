@@ -9,7 +9,7 @@ use super::Actor;
 use crate::{
     backend::{Device, InferenceBackend, TrainingBackend, device},
     network::mlp::{Activation, MlpModel},
-    policy::{Policy, PolicySample},
+    policy::Policy,
 };
 
 #[derive(Module, Debug)]
@@ -69,32 +69,22 @@ where
     type Observation = Array1<f64>;
     type Action = usize;
 
-    fn log_prob(&self, observation: &Self::Observation, action: &Self::Action) -> f64 {
-        self.probabilities(observation)[*action].ln()
-    }
-
-    fn sample_action_with_log_prob(
+    fn sample_action(
         &self,
         observation: &Self::Observation,
         rng: &mut dyn rand::Rng,
-    ) -> PolicySample<Self::Action> {
+    ) -> Self::Action {
         let probabilities = self.probabilities(observation);
         let sample: f64 = rng.random();
         let mut cumulative = 0.0;
         for (action, probability) in probabilities.iter().enumerate() {
             cumulative += probability;
             if sample < cumulative {
-                return PolicySample {
-                    action,
-                    log_prob: probability.ln(),
-                };
+                return action;
             }
         }
 
-        PolicySample {
-            action: probabilities.len() - 1,
-            log_prob: probabilities.last().expect("actor has actions").ln(),
-        }
+        probabilities.len() - 1
     }
 }
 

@@ -100,9 +100,10 @@ impl ModelFreeSolver for ApproximateTD {
         rng: &mut dyn rand::Rng,
         reporter: &mut Reporter<'_, Array1<f64>>,
     ) -> Result<SolveResult<Array1<f64>>, String> {
-        let Space::Continuous { dim: n_s } = env.state_space() else {
-            return Err("Approximate TD requires a continuous state space".into());
-        };
+        let n_s = env
+            .state_space()
+            .continuous_dim()
+            .ok_or("Approximate TD requires a continuous state space")?;
         let Space::Discrete { size: n_a } = env.action_space() else {
             return Err("Approximate TD requires a discrete action space".into());
         };

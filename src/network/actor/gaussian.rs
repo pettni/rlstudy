@@ -8,7 +8,7 @@ use rand_distr::{Distribution, StandardNormal};
 use super::Actor;
 use crate::backend::{Device, InferenceBackend, TrainingBackend, device};
 use crate::network::mlp::{Activation, MlpModel};
-use crate::policy::{Policy, PolicySample};
+use crate::policy::Policy;
 
 #[derive(Module, Debug)]
 pub struct GaussianActor<B: Backend> {
@@ -87,35 +87,18 @@ where
     type Observation = Array1<f64>;
     type Action = Array1<f64>;
 
-    fn log_prob(&self, observation: &Self::Observation, action: &Self::Action) -> f64 {
-        let (mu, log_std) = self.parameters_for_observation(observation);
-        let log_two_pi = (2.0 * std::f64::consts::PI).ln();
-
-        action
-            .iter()
-            .zip(mu.iter().zip(&log_std))
-            .map(|(&action, (&mu, &log_std))| {
-                let normalized = (action - mu) / log_std.exp();
-                -0.5 * (normalized * normalized + log_two_pi) - log_std
-            })
-            .sum()
-    }
-
-    fn sample_action_with_log_prob(
+    fn sample_action(
         &self,
         observation: &Self::Observation,
         rng: &mut dyn rand::Rng,
-    ) -> PolicySample<Self::Action> {
+    ) -> Self::Action {
         let (mu, log_std) = self.parameters_for_observation(observation);
-        let log_two_pi = (2.0 * std::f64::consts::PI).ln();
-        let mut log_prob = 0.0;
         let action = Array1::from_iter(mu.iter().zip(&log_std).map(|(&mu, &log_std)| {
             let noise: f64 = StandardNormal.sample(rng);
-            log_prob += -0.5 * (noise * noise + log_two_pi) - log_std;
             mu + noise * log_std.exp()
         }));
 
-        PolicySample { action, log_prob }
+        action
     }
 }
 
@@ -151,7 +134,6 @@ impl Actor<Array1<f64>> for GaussianActor<TrainingBackend> {
 mod tests {
     use super::*;
     use crate::backend::InferenceBackend;
-    use rand::{SeedableRng, rngs::StdRng};
 
     #[test]
     fn returns_mean_and_log_standard_deviation_per_action() {
@@ -167,16 +149,5 @@ mod tests {
                 .iter::<f64>()
                 .all(|value| value == -0.5)
         );
-    }
-
-    #[test]
-    fn sampled_and_evaluated_log_probabilities_match() {
-        let actor = GaussianActor::<InferenceBackend>::new(1, &[2], 2, Activation::Tanh, device());
-        let observation = Array1::zeros(1);
-        let mut rng = StdRng::seed_from_u64(0);
-
-        let sample = actor.sample_action_with_log_prob(&observation, &mut rng);
-
-        assert!((sample.log_prob - actor.log_prob(&observation, &sample.action)).abs() < 1e-12);
     }
 }

@@ -30,7 +30,7 @@ Develop a solid working understanding of the RL options for improving pretrained
 
 ## Current status
 
-As of 2026-09-23:
+As of 2026-09-25:
 
 - [x] Started reading Zhao end-to-end.
 - [x] Ordered Zhao and Sutton & Barto.
@@ -54,8 +54,9 @@ As of 2026-09-23:
 - [x] Implemented VPG with generalized advantage estimation and bootstrapped value targets.
 - [x] Standardized DQN, REINFORCE, and VPG transition storage around a shared transition buffer.
 - [x] Wrote an algorithm taxonomy covering policy relation, targets, policy signals, data usage, and bias–variance tradeoffs.
+- [x] Implemented PPO and an initial DDPG solver with bounded continuous actions, replay-buffer warmup, target networks, and evaluation reporting.
 
-The Zhao implementation checkpoints, including neural n-step Sarsa, are complete. VPG with GAE solves CartPole, providing the bridge into Spinning Up. Online one-step actor–critic remains unreliable on CartPole. Next, work through PPO and implement it on a small continuous-control environment.
+The Zhao implementation checkpoints, including neural n-step Sarsa, are complete. VPG and PPO with GAE solve CartPole, and DDPG provides the bridge into continuous control. Online one-step actor–critic remains unreliable on CartPole. Next, try DDPG on HalfCheetah.
 
 ## Project
 
@@ -140,9 +141,11 @@ Start this phase after Zhao Chapter 10. Use [OpenAI Spinning Up](https://spinnin
 - [x] Read the Spinning Up introduction and key concepts.
 - [x] Read Sutton and Barto §§12.1–12.3 on λ-returns before studying PPO and generalized advantage estimation.
 - [x] Work through the VPG explanation and implement it in Rust/Burn.
-- [ ] Work through the PPO, TD3, and SAC explanations.
+- [x] Work through the PPO explanation and implement PPO with generalized advantage estimation on CartPole.
+- [ ] Work through the TD3 and SAC explanations.
 - [x] Compare the Zhao Rust/Burn REINFORCE and actor–critic implementations with Spinning Up's VPG formulation.
-- [ ] Personally implement PPO with generalized advantage estimation on one small continuous-control environment.
+- [x] Implement an initial DDPG solver with replay data and target networks.
+- [ ] Try DDPG on HalfCheetah.
 - [ ] Implement a squashed Gaussian actor, replay buffer, twin critics, target networks, and entropy-temperature update for SAC in Rust/Burn.
 - [ ] Train SAC on a simple Gymnasium continuous-control environment through a small PyO3 bridge.
 - [ ] Compare learning curves with a readable reference implementation such as CleanRL or Stable-Baselines3.
@@ -259,3 +262,4 @@ Use these in the roles below, not as a parallel reading backlog.
 | 2026-09-20 | Implemented approximate TD(n) | Added episodic semi-gradient n-step Sarsa with a neural Q function and a MountainCar configuration | Continue into practical policy-gradient methods |
 | 2026-09-23 | Implemented VPG in Rust/Burn | Added trajectory batches, GAE, bootstrapped value targets, and CartPole settings that reached a 494.7 mean evaluation return with seed 42 | Work through PPO and continuous policies |
 | 2026-09-23 | Standardized transition storage and documented the algorithm taxonomy | DQN, REINFORCE, and VPG now reuse the transition buffer; `TAXONOMY.md` records the main dimensions distinguishing the implemented algorithms | Implement PPO on a small continuous-control environment |
+| 2026-09-25 | Implemented PPO and an initial DDPG solver in Rust/Burn | PPO with GAE runs successfully on CartPole; DDPG supports bounded continuous actions, replay-buffer warmup, target-network updates, configurable collection and optimization steps, and evaluation reporting | Try DDPG on HalfCheetah |

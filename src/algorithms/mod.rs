@@ -5,6 +5,7 @@ use crate::reporting::{Reporter, ReporterConfig};
 
 pub mod actor_critic;
 pub mod approximate_td;
+pub mod ddpg;
 pub mod dqn;
 pub mod monte_carlo;
 pub mod policy_gradient;
@@ -64,8 +65,6 @@ pub struct SolveResult<Observation, Action = usize> {
     pub policy: Box<dyn Policy<Observation = Observation, Action = Action>>,
     pub status: SolveStatus,
 }
-
-pub type TabularSolveResult = SolveResult<usize>;
 
 fn validate_gamma(gamma: f64) -> Result<(), String> {
     if !gamma.is_finite() || !(0.0..1.0).contains(&gamma) {

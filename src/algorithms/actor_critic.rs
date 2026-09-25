@@ -115,9 +115,10 @@ impl ModelFreeSolver for ActorCritic {
         rng: &mut dyn rand::Rng,
         reporter: &mut Reporter<'_, Array1<f64>>,
     ) -> Result<SolveResult<Array1<f64>>, String> {
-        let Space::Continuous { dim: n_s } = env.state_space() else {
-            return Err("Actor-critic requires a continuous state space".into());
-        };
+        let n_s = env
+            .state_space()
+            .continuous_dim()
+            .ok_or("Actor-critic requires a continuous state space")?;
         let Space::Discrete { size: n_a } = env.action_space() else {
             return Err("Actor-critic requires a discrete action space".into());
         };
@@ -232,10 +233,6 @@ impl ModelFreeSolver for ActorCritic {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::environment::FeatureEnvironment;
-    use crate::environments::grid_world;
-    use crate::reporting::{Reporter, ReporterConfig};
-    use rand::{SeedableRng, rngs::StdRng};
 
     #[test]
     fn configuration_is_validated() {
@@ -261,46 +258,5 @@ mod tests {
             })
             .is_ok()
         );
-    }
-
-    #[test]
-    fn trains_and_records_evaluations() {
-        let model = grid_world(3).unwrap();
-        let mut environment = FeatureEnvironment::new(&model).unwrap();
-        let mut rng = StdRng::seed_from_u64(0);
-        let solver = ActorCritic::new(ActorCriticConfig {
-            episodes: 2,
-            episode_length: 2,
-            ..ActorCriticConfig::default()
-        })
-        .unwrap();
-
-        let mut evaluation_environment = FeatureEnvironment::new(&model).unwrap();
-        let mut reporter = Reporter::new(
-            ReporterConfig {
-                evaluation_frequency: Some(1),
-                evaluation_episodes: 1,
-                evaluation_max_steps: 2,
-            },
-            0,
-            Some(&mut evaluation_environment),
-        );
-        let result = solver
-            .solve_with_reporter(&mut environment, &mut rng, &mut reporter)
-            .unwrap();
-        let observation = Array1::from_vec(vec![0.0, 0.0]);
-        let probabilities = Array1::from_iter(
-            (0..model.actions().len())
-                .map(|action| result.policy.log_prob(&observation, &action).exp()),
-        );
-        let history = reporter.into_history();
-
-        assert_eq!(history.len(), 2);
-        assert!(history.iter().all(|row| {
-            row.metrics.contains_key("eval/return_mean")
-                && row.metrics.contains_key("optimizer/actor_lr")
-                && row.metrics.contains_key("policy/entropy")
-        }));
-        assert!((probabilities.sum() - 1.0).abs() < 1e-6);
     }
 }

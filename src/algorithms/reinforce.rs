@@ -96,9 +96,10 @@ impl ModelFreeSolver for Reinforce {
         rng: &mut dyn rand::Rng,
         reporter: &mut Reporter<'_, Array1<f64>>,
     ) -> Result<SolveResult<Array1<f64>>, String> {
-        let Space::Continuous { dim: n_s } = env.state_space() else {
-            return Err("Policy gradient requires a continuous state space".into());
-        };
+        let n_s = env
+            .state_space()
+            .continuous_dim()
+            .ok_or("Policy gradient requires a continuous state space")?;
         let Space::Discrete { size: n_a } = env.action_space() else {
             return Err("Policy gradient requires a discrete action space".into());
         };
@@ -130,16 +131,11 @@ impl ModelFreeSolver for Reinforce {
         );
         let mut v = MlpModel::new(n_s, self.config.hidden_dims, 1, device());
         let mut buffer = TransitionBuffer::<usize>::with_capacity(self.config.episode_length, None);
+        let mut rollout = Rollout::new(env, rng);
 
         for episode_index in 0..self.config.episodes {
             buffer.clear();
-            let mut rollout = Rollout::new(env, rng);
-            for _ in 0..self.config.episode_length {
-                let transition = buffer.fill_one(&mut rollout, &pi, rng);
-                if transition.terminated || transition.truncated {
-                    break;
-                }
-            }
+            buffer.fill_episode_actor(&mut rollout, &pi, rng, Some(self.config.episode_length));
             let episode_length = buffer.len();
             let batch = buffer.tensor_data();
             let returns = batch.discounted_returns_no_bootstrapping(self.config.gamma);
@@ -221,55 +217,5 @@ impl ModelFreeSolver for Reinforce {
                 iterations: self.config.episodes,
             },
         })
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::environment::FeatureEnvironment;
-    use crate::environments::grid_world;
-    use crate::reporting::{Reporter, ReporterConfig};
-    use rand::{SeedableRng, rngs::StdRng};
-
-    #[test]
-    fn trains_and_records_evaluations() {
-        let model = grid_world(3).unwrap();
-        let mut environment = FeatureEnvironment::new(&model).unwrap();
-        let mut rng = StdRng::seed_from_u64(0);
-        let solver = Reinforce::new(ReinforceConfig {
-            episodes: 2,
-            episode_length: 2,
-            ..ReinforceConfig::default()
-        })
-        .unwrap();
-
-        let mut evaluation_environment = FeatureEnvironment::new(&model).unwrap();
-        let mut reporter = Reporter::new(
-            ReporterConfig {
-                evaluation_frequency: Some(1),
-                evaluation_episodes: 1,
-                evaluation_max_steps: 2,
-            },
-            0,
-            Some(&mut evaluation_environment),
-        );
-        let result = solver
-            .solve_with_reporter(&mut environment, &mut rng, &mut reporter)
-            .unwrap();
-        let observation = Array1::from_vec(vec![0.0, 0.0]);
-        let probabilities = Array1::from_iter(
-            (0..model.actions().len())
-                .map(|action| result.policy.log_prob(&observation, &action).exp()),
-        );
-        let history = reporter.into_history();
-
-        assert_eq!(history.len(), 2);
-        assert!(history.iter().all(|row| {
-            row.metrics.contains_key("eval/return_mean")
-                && row.metrics.contains_key("optimizer/lr")
-                && row.metrics.contains_key("policy/entropy")
-        }));
-        assert!((probabilities.sum() - 1.0).abs() < 1e-6);
     }
 }

@@ -6,7 +6,7 @@ use self::systems::{SelectedSystem, build_system};
 use clap::{Parser, Subcommand};
 use ndarray::{Array1, Array2};
 use rand::{SeedableRng, rngs::StdRng};
-use rlstudy::algorithms::{ModelBasedSolver, ModelFreeSolver, SolveResult, TabularSolveResult};
+use rlstudy::algorithms::{ModelBasedSolver, ModelFreeSolver, SolveResult};
 use rlstudy::environment::{Environment, FeatureEnvironment, TabularEnvironment};
 use rlstudy::environments::{
     ContinuousGymEnvironment, DiscreteGymEnvironment, GymEnvironment, GymOptions,
@@ -89,7 +89,7 @@ fn solve(args: &SolveArgs) -> Result<(), Box<dyn std::error::Error>> {
     )?;
     let discrete_model = system
         .as_model()
-        .map(|model| build_discrete_model(model, &result, args.value_gamma))
+        .map(|model| build_discrete_model(model, &result, args.value_gamma, &mut rng))
         .transpose()?;
 
     if args.json {
@@ -412,7 +412,7 @@ fn run_model_free<S: ModelFreeSolver>(
 }
 
 enum SelectedResult {
-    Tabular(TabularSolveResult, Vec<HistoryRow>),
+    Tabular(SolveResult<usize>, Vec<HistoryRow>),
     Neural(SolveResult<Array1<f64>>, Vec<HistoryRow>),
     Continuous(SolveResult<Array1<f64>, Array1<f64>>, Vec<HistoryRow>),
 }
@@ -446,19 +446,25 @@ fn build_discrete_model(
     model: &TabularModel,
     result: &SelectedResult,
     gamma: f64,
+    rng: &mut dyn rand::Rng,
 ) -> Result<DiscreteModelResult, String> {
     let mut probabilities = Array2::zeros((model.states().len(), model.actions().len()));
     for state in 0..model.states().len() {
         let row = match result {
             SelectedResult::Tabular(result, _) => {
-                action_probabilities(result.policy.as_ref(), &state, model.actions().len())
+                action_probabilities(result.policy.as_ref(), &state, model.actions().len(), rng)
             }
             SelectedResult::Neural(result, _) => {
                 let features = model
                     .state_features(state)
                     .ok_or("model state features are required for neural policies")?
                     .to_owned();
-                action_probabilities(result.policy.as_ref(), &features, model.actions().len())
+                action_probabilities(
+                    result.policy.as_ref(),
+                    &features,
+                    model.actions().len(),
+                    rng,
+                )
             }
             SelectedResult::Continuous(_, _) => {
                 return Err("continuous policy cannot be rendered on a discrete model".into());
@@ -488,8 +494,11 @@ fn action_probabilities<Observation>(
     policy: &dyn Policy<Observation = Observation, Action = usize>,
     observation: &Observation,
     num_actions: usize,
+    rng: &mut dyn rand::Rng,
 ) -> Array1<f64> {
-    Array1::from_iter((0..num_actions).map(|action| policy.log_prob(observation, &action).exp()))
+    let mut probabilities = Array1::zeros(num_actions);
+    probabilities[policy.sample_action(observation, rng)] = 1.0;
+    probabilities
 }
 
 #[derive(Serialize)]

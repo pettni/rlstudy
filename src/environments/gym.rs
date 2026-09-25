@@ -54,10 +54,17 @@ impl GymEnvironment {
             let action_space = bound.getattr("action_space")?;
 
             let observation_low = extract_vector(&observation_space.getattr("low")?)?;
+            let observation_high = extract_vector(&observation_space.getattr("high")?)?;
+            if observation_low.len() != observation_high.len() {
+                return Err(PyValueError::new_err(
+                    "Gym observation-space bounds have different dimensions",
+                ));
+            }
             let core = GymCore {
                 env,
                 observation_space: Space::Continuous {
-                    dim: observation_low.len(),
+                    low: observation_low,
+                    high: observation_high,
                 },
             };
 
@@ -82,7 +89,8 @@ impl GymEnvironment {
             Ok(Self::Continuous(ContinuousGymEnvironment {
                 core,
                 action_space: Space::Continuous {
-                    dim: action_low.len(),
+                    low: action_low,
+                    high: action_high,
                 },
             }))
         })
