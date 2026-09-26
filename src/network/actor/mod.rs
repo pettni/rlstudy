@@ -36,7 +36,7 @@ pub trait Actor<A: ActionType>:
         &self,
         states: Tensor<TrainingBackend, 2>,
         rng: &mut dyn rand::Rng,
-    ) -> A::TensorType;
+    ) -> (A::TensorType, Tensor<TrainingBackend, 1>);
 
     fn log_probs(
         &self,

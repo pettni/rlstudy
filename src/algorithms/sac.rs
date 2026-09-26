@@ -13,7 +13,7 @@ use crate::transition_buffer::TransitionBuffer;
 use burn::{
     module::AutodiffModule,
     optim::{AdamConfig, GradientsParams, Optimizer},
-    tensor::{ElementConversion, Tensor, backend::Backend},
+    tensor::{ElementConversion, Tensor, activation::log_softmax, backend::Backend},
 };
 use ndarray::Array1;
 use rand::RngExt;
@@ -28,7 +28,6 @@ pub struct SoftActorCriticConfig {
     pub warm_up_transitions: usize,
     pub steps_per_iteration: usize,
     pub q_updates_per_iteration: usize,
-    pub pi_updates_every_n_q_updates: usize,
     pub ema_rate: f64,
     pub q_network: MlpSettings,
     pub pi_network: MlpSettings,
@@ -45,7 +44,6 @@ impl Default for SoftActorCriticConfig {
             warm_up_transitions: 64,
             steps_per_iteration: 1,
             q_updates_per_iteration: 1,
-            pi_updates_every_n_q_updates: 1,
             ema_rate: 0.01,
             q_network: MlpSettings::default(),
             pi_network: MlpSettings::default(),
@@ -118,16 +116,16 @@ where
             for _ in 0..self.config.q_updates_per_iteration {
                 let batch = buffer.random_batch_tensor_data(self.config.batch_size, rng);
 
-                let ap = pi.sample_actions(batch.sp.clone(), rng);
-
-                let q1val_target = Action::eval_q(&q1.target, batch.sp.clone(), ap.clone());
-                let a2val_target = Action::eval_q(&q2.target, batch.sp.clone(), ap.clone());
-
+                let (soft_next_values, _) = Action::soft_state_values(
+                    &pi,
+                    &q1.target,
+                    &q2.target,
+                    batch.sp.clone(),
+                    self.config.alpha,
+                    rng,
+                );
                 let td_target = batch.r
-                    + self.config.gamma
-                        * batch.terminated.bool_not().float()
-                        * (q1val_target.min_pair(a2val_target)
-                            - self.config.alpha * pi.log_probs(batch.sp.clone(), &ap));
+                    + self.config.gamma * batch.terminated.bool_not().float() * soft_next_values;
                 let td_target = td_target.detach();
 
                 // critic updates
@@ -146,19 +144,17 @@ where
 
                 // actor update
 
-                // problem: not differentiable for deterministic
-                let a_pred = pi.sample_actions(batch.s.clone(), rng);
-
-                let q1val_pred = Action::eval_q(&q1.pred, batch.s.clone(), a_pred.clone());
-                let q2val_pred = Action::eval_q(&q2.pred, batch.s.clone(), a_pred.clone());
-                let logprob_pred = pi.log_probs(batch.s.clone(), &a_pred);
-                update_metrics.record(
-                    "pi/entropy",
-                    -logprob_pred.clone().into_scalar().elem::<f64>(),
+                let (soft_values, entropy) = Action::soft_state_values(
+                    &pi,
+                    &q1.pred,
+                    &q2.pred,
+                    batch.s.clone(),
+                    self.config.alpha,
+                    rng,
                 );
+                update_metrics.record("pi/entropy", entropy.mean().into_scalar().elem::<f64>());
 
-                let pi_loss =
-                    -(q1val_pred.min_pair(q2val_pred) - self.config.alpha * logprob_pred).mean();
+                let pi_loss = -soft_values.mean();
                 update_metrics.record("pi/loss", pi_loss.clone().into_scalar().elem::<f64>());
 
                 let pi_grad = GradientsParams::from_grads(pi_loss.backward(), &pi);
@@ -211,6 +207,15 @@ trait SacActorCritic: ActionType {
         states: Tensor<TrainingBackend, 2>,
         actions: Self::TensorType,
     ) -> Tensor<TrainingBackend, 1>;
+
+    fn soft_state_values(
+        pi: &Self::Actor,
+        q1: &MlpModel<TrainingBackend>,
+        q2: &MlpModel<TrainingBackend>,
+        states: Tensor<TrainingBackend, 2>,
+        alpha: f64,
+        rng: &mut dyn rand::Rng,
+    ) -> (Tensor<TrainingBackend, 1>, Tensor<TrainingBackend, 1>);
 }
 
 impl SacActorCritic for usize {
@@ -263,6 +268,28 @@ impl SacActorCritic for usize {
             .gather(1, actions.reshape([-1, 1]))
             .squeeze_dim(1)
     }
+
+    fn soft_state_values(
+        pi: &Self::Actor,
+        q1: &MlpModel<TrainingBackend>,
+        q2: &MlpModel<TrainingBackend>,
+        states: Tensor<TrainingBackend, 2>,
+        alpha: f64,
+        _rng: &mut dyn rand::Rng,
+    ) -> (Tensor<TrainingBackend, 1>, Tensor<TrainingBackend, 1>) {
+        let log_probs = log_softmax(pi.forward(states.clone()), 1);
+        let probabilities = log_probs.clone().exp();
+        let q_values = q1
+            .forward(states.clone())
+            .min_pair(q2.forward(states))
+            .detach();
+
+        let expected_q = (probabilities.clone() * q_values).sum_dim(1).squeeze_dim(1);
+        let entropy = -(probabilities * log_probs).sum_dim(1).squeeze_dim(1);
+        let soft_values = expected_q + entropy.clone() * alpha;
+
+        (soft_values, entropy)
+    }
 }
 
 impl SacActorCritic for Array1<f64> {
@@ -309,6 +336,26 @@ impl SacActorCritic for Array1<f64> {
         model
             .forward(Tensor::cat(vec![states, actions], 1))
             .squeeze_dim(1)
+    }
+
+    fn soft_state_values(
+        pi: &Self::Actor,
+        q1: &MlpModel<TrainingBackend>,
+        q2: &MlpModel<TrainingBackend>,
+        states: Tensor<TrainingBackend, 2>,
+        alpha: f64,
+        rng: &mut dyn rand::Rng,
+    ) -> (Tensor<TrainingBackend, 1>, Tensor<TrainingBackend, 1>) {
+        let (actions, log_probs) = pi.sample_actions(states.clone(), rng);
+        let q_values = Self::eval_q(q1, states.clone(), actions.clone()).min_pair(Self::eval_q(
+            q2,
+            states.clone(),
+            actions.clone(),
+        ));
+        let entropy = -log_probs;
+        let soft_values = q_values + entropy.clone() * alpha;
+
+        (soft_values, entropy)
     }
 }
 

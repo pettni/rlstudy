@@ -1,9 +1,7 @@
 use burn::{
     module::Module,
     tensor::{
-        ElementConversion, Int, Tensor, TensorData,
-        activation::{log_softmax, softmax},
-        backend::Backend,
+        ElementConversion, Int, Tensor, TensorData, activation::log_softmax, backend::Backend,
     },
 };
 use ndarray::Array1;
@@ -39,13 +37,8 @@ impl<B: Backend> CategoricalActor<B> {
 }
 
 impl<B: Backend<Device = Device>> CategoricalActor<B> {
-    fn sample_actions_impl(
-        &self,
-        observations: Tensor<B, 2>,
-        _rng: &mut dyn rand::Rng,
-    ) -> Tensor<B, 1, Int> {
-        let probs = softmax(self.forward(observations), 1);
-        probs.categorical(1).squeeze_dim(1)
+    fn deterministic_actions_impl(&self, observations: Tensor<B, 2>) -> Tensor<B, 1, Int> {
+        self.forward(observations).argmax(1).squeeze_dim(1)
     }
 }
 
@@ -65,9 +58,18 @@ impl Actor<usize> for CategoricalActor<TrainingBackend> {
     fn sample_actions(
         &self,
         states: Tensor<TrainingBackend, 2>,
-        rng: &mut dyn rand::Rng,
-    ) -> <usize as crate::network::action::ActionType>::TensorType {
-        self.sample_actions_impl(states, rng)
+        _rng: &mut dyn rand::Rng,
+    ) -> (
+        <usize as crate::network::action::ActionType>::TensorType,
+        Tensor<TrainingBackend, 1>,
+    ) {
+        let log_probs = log_softmax(self.forward(states), 1);
+        let actions = log_probs.clone().exp().categorical(1).squeeze_dim(1);
+        let selected_log_probs = log_probs
+            .gather(1, actions.clone().reshape([-1, 1]))
+            .squeeze_dim(1);
+
+        (actions, selected_log_probs)
     }
 
     fn entropy(&self, states: Tensor<TrainingBackend, 2>) -> Tensor<TrainingBackend, 1> {
@@ -78,15 +80,33 @@ impl Actor<usize> for CategoricalActor<TrainingBackend> {
     }
 }
 
-impl<B: Backend<Device = Device>> Policy for CategoricalActor<B> {
+impl Policy for CategoricalActor<TrainingBackend> {
     type Observation = Array1<f64>;
     type Action = usize;
 
     fn sample_action(&self, state: &Array1<f64>, rng: &mut dyn rand::Rng) -> Self::Action {
-        let state =
-            Tensor::<B, 2>::from_data(TensorData::new(state.to_vec(), [1, state.len()]), device());
+        let state = Tensor::<TrainingBackend, 2>::from_data(
+            TensorData::new(state.to_vec(), [1, state.len()]),
+            device(),
+        );
 
-        let action = self.sample_actions_impl(state, rng);
+        let (action, _) = self.sample_actions(state, rng);
+
+        action.into_scalar().elem::<i64>() as usize
+    }
+}
+
+impl Policy for CategoricalActor<InferenceBackend> {
+    type Observation = Array1<f64>;
+    type Action = usize;
+
+    fn sample_action(&self, state: &Array1<f64>, _rng: &mut dyn rand::Rng) -> Self::Action {
+        let state = Tensor::<InferenceBackend, 2>::from_data(
+            TensorData::new(state.to_vec(), [1, state.len()]),
+            device(),
+        );
+
+        let action = self.deterministic_actions_impl(state);
 
         action.into_scalar().elem::<i64>() as usize
     }

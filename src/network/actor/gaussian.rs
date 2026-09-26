@@ -56,14 +56,9 @@ impl<B: Backend> GaussianActor<B> {
 }
 
 impl<B: Backend<Device = Device>> GaussianActor<B> {
-    fn sample_actions_impl(
-        &self,
-        observations: Tensor<B, 2>,
-        _rng: &mut dyn rand::Rng,
-    ) -> Tensor<B, 2> {
-        let (mu, log_std) = self.parameters(observations);
-        let noise = mu.random_like(burn::tensor::Distribution::Normal(0., 1.));
-        mu + noise * log_std.exp()
+    fn deterministic_actions_impl(&self, observations: Tensor<B, 2>) -> Tensor<B, 2> {
+        let (mu, _) = self.parameters(observations);
+        mu
     }
 }
 
@@ -88,9 +83,15 @@ impl Actor<Array1<f64>> for GaussianActor<TrainingBackend> {
     fn sample_actions(
         &self,
         observations: Tensor<TrainingBackend, 2>,
-        rng: &mut dyn rand::Rng,
-    ) -> Tensor<TrainingBackend, 2> {
-        self.sample_actions_impl(observations, rng)
+        _rng: &mut dyn rand::Rng,
+    ) -> (Tensor<TrainingBackend, 2>, Tensor<TrainingBackend, 1>) {
+        let (mu, log_std) = self.parameters(observations);
+        let noise = mu.random_like(burn::tensor::Distribution::Normal(0., 1.));
+        let actions = mu + noise.clone() * log_std.clone().exp();
+        let log_two_pi = (2.0 * std::f64::consts::PI).ln();
+        let log_probs: Tensor<TrainingBackend, 2> = -0.5 * (noise.square() + log_two_pi) - log_std;
+
+        (actions, log_probs.sum_dim(1).squeeze_dim(1))
     }
 
     fn entropy(&self, states: Tensor<TrainingBackend, 2>) -> Tensor<TrainingBackend, 1> {
@@ -103,14 +104,30 @@ impl Actor<Array1<f64>> for GaussianActor<TrainingBackend> {
     }
 }
 
-impl<B: Backend<Device = Device>> Policy for GaussianActor<B> {
+impl Policy for GaussianActor<TrainingBackend> {
     type Observation = Array1<f64>;
     type Action = Array1<f64>;
 
     fn sample_action(&self, state: &Array1<f64>, rng: &mut dyn rand::Rng) -> Self::Action {
-        let state =
-            Tensor::<B, 2>::from_data(TensorData::new(state.to_vec(), [1, state.len()]), device());
-        let action = self.sample_actions_impl(state, rng);
+        let state = Tensor::<TrainingBackend, 2>::from_data(
+            TensorData::new(state.to_vec(), [1, state.len()]),
+            device(),
+        );
+        let (action, _) = self.sample_actions(state, rng);
+        Array1::from_iter(action.into_data().iter())
+    }
+}
+
+impl Policy for GaussianActor<InferenceBackend> {
+    type Observation = Array1<f64>;
+    type Action = Array1<f64>;
+
+    fn sample_action(&self, state: &Array1<f64>, _rng: &mut dyn rand::Rng) -> Self::Action {
+        let state = Tensor::<InferenceBackend, 2>::from_data(
+            TensorData::new(state.to_vec(), [1, state.len()]),
+            device(),
+        );
+        let action = self.deterministic_actions_impl(state);
         Array1::from_iter(action.into_data().iter())
     }
 }

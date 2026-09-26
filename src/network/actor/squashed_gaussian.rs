@@ -1,6 +1,6 @@
 use burn::{
     module::Module,
-    tensor::{Tensor, TensorData, backend::Backend},
+    tensor::{Tensor, TensorData, activation::softplus, backend::Backend},
 };
 use ndarray::Array1;
 
@@ -67,15 +67,34 @@ impl<B: Backend<Device = Device>> SquashedGaussianActor<B> {
         self.a.clone() + self.b.clone() * mu.tanh()
     }
 
-    fn sample_actions_impl(
+    fn log_probs_from_pre_squash(
+        &self,
+        mu: Tensor<B, 2>,
+        log_std: Tensor<B, 2>,
+        x: Tensor<B, 2>,
+    ) -> Tensor<B, 1> {
+        let standardized = (x.clone() - mu) / log_std.clone().exp();
+        let log_two_pi = (2.0 * std::f64::consts::PI).ln();
+        let normal_log_probs = -0.5 * (standardized.square() + log_two_pi) - log_std;
+        let log_tanh_jacobian =
+            (x.clone() + softplus(x * -2.0, 1.0)) * -2.0 + 2.0 * std::f64::consts::LN_2;
+        let log_probs: Tensor<B, 2> = normal_log_probs - self.b.clone().log() - log_tanh_jacobian;
+
+        log_probs.sum_dim(1).squeeze_dim(1)
+    }
+
+    fn sample_actions_with_log_probs_impl(
         &self,
         observations: Tensor<B, 2>,
         _rng: &mut dyn rand::Rng,
-    ) -> Tensor<B, 2> {
+    ) -> (Tensor<B, 2>, Tensor<B, 1>) {
         let (mu, log_std) = self.parameters(observations);
         let noise = mu.random_like(burn::tensor::Distribution::Normal(0., 1.));
-        let normalized_actions = (mu + noise * log_std.exp()).tanh(); // [-1, 1]
-        self.a.clone() + self.b.clone() * normalized_actions
+        let x = mu.clone() + noise * log_std.clone().exp();
+        let log_probs = self.log_probs_from_pre_squash(mu, log_std, x.clone());
+        let actions = self.a.clone() + self.b.clone() * x.tanh();
+
+        (actions, log_probs)
     }
 }
 
@@ -94,30 +113,18 @@ impl Actor<Array1<f64>> for SquashedGaussianActor<TrainingBackend> {
         //
         // p_Y(y) = p_X(x) / (b * (1 - tanh^2(x)))
 
-        let y = actions;
+        let tanh_x =
+            ((actions.clone() - self.a.clone()) / self.b.clone()).clamp(-1. + 1e-6, 1. - 1e-6);
 
-        let tanh_x = ((y.clone() - self.a.clone()) / self.b.clone()).clamp(-1. + 1e-6, 1. - 1e-6);
-        let x = tanh_x.clone().atanh();
-        let standardized = (x - mu) / log_std.clone().exp();
-
-        let log_two_pi = (2.0 * std::f64::consts::PI).ln();
-
-        let normal_log_probs = -0.5 * (standardized.square() + log_two_pi) - log_std;
-
-        let tanh_jacobian = tanh_x.ones_like() - tanh_x.square();
-
-        let log_probs: Tensor<TrainingBackend, 2> =
-            normal_log_probs - self.b.clone().log() - tanh_jacobian.log();
-
-        log_probs.sum_dim(1).squeeze_dim(1)
+        self.log_probs_from_pre_squash(mu, log_std, tanh_x.atanh())
     }
 
     fn sample_actions(
         &self,
         observations: Tensor<TrainingBackend, 2>,
         rng: &mut dyn rand::Rng,
-    ) -> Tensor<TrainingBackend, 2> {
-        self.sample_actions_impl(observations, rng)
+    ) -> (Tensor<TrainingBackend, 2>, Tensor<TrainingBackend, 1>) {
+        self.sample_actions_with_log_probs_impl(observations, rng)
     }
 
     fn entropy(&self, states: Tensor<TrainingBackend, 2>) -> Tensor<TrainingBackend, 1> {
@@ -139,7 +146,7 @@ impl Policy for SquashedGaussianActor<TrainingBackend> {
             TensorData::new(state.to_vec(), [1, state.len()]),
             device(),
         );
-        let action = self.sample_actions_impl(state, rng);
+        let (action, _) = self.sample_actions(state, rng);
         Array1::from_iter(action.into_data().iter())
     }
 }
