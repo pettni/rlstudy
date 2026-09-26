@@ -1,5 +1,4 @@
-use super::algorithm::DeterministicPolicyGradientConfig;
-use super::algorithm::TargetNoise;
+use super::policy_gradient::{DeterministicPolicyGradientConfig, TargetNoise};
 use crate::network::MlpSettings;
 use serde::{Deserialize, Serialize};
 

@@ -1,7 +1,8 @@
-use super::{DqnConfig, DqnMode, TargetUpdateConfig};
-use crate::network::{Activation, MlpSettings, loss::Loss};
-use crate::schedule::Schedule;
 use clap::Args;
+use rlstudy::{
+    algorithms::{DqnConfig, DqnMode, Schedule, TargetUpdateConfig},
+    network::{Activation, MlpSettings, loss::Loss},
+};
 
 #[derive(Debug, Clone, PartialEq, Args)]
 pub struct DqnArgs {

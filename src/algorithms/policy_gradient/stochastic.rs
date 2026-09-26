@@ -1,5 +1,5 @@
-use super::{ppo::PpoConfig, vpg::VanillaPolicyGradientConfig};
 use crate::algorithms::{ModelFreeSolver, SolveResult, SolveStatus};
+use crate::algorithms::{ppo::PpoConfig, vpg::VanillaPolicyGradientConfig};
 use crate::backend::{TrainingBackend, device};
 use crate::environment::{Environment, Rollout, Space};
 use crate::network::action::ActionType;
@@ -17,7 +17,7 @@ use rand::RngExt;
 use std::marker::PhantomData;
 
 #[derive(Debug, Clone, PartialEq)]
-pub(super) enum PolicyObjective {
+pub(in crate::algorithms) enum PolicyObjective {
     /// Vanilla policy gradient objective
     ///
     ///  \log pi(a| s) * A(s, a)
@@ -29,11 +29,11 @@ pub(super) enum PolicyObjective {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub(super) struct PolicyUpdateStrategy {
+pub(in crate::algorithms) struct PolicyUpdateStrategy {
     /// Max update steps per loop
-    pub(super) max_updates_per_epoch: usize,
+    pub(in crate::algorithms) max_updates_per_epoch: usize,
     /// KL divergence threshold for early stopping
-    pub(super) kl_limit: Option<f64>,
+    pub(in crate::algorithms) kl_limit: Option<f64>,
 }
 
 impl Default for PolicyUpdateStrategy {
@@ -46,16 +46,16 @@ impl Default for PolicyUpdateStrategy {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub(super) struct PolicyGradientConfig {
-    pub(super) objective: PolicyObjective,
-    pub(super) gamma: f64,
-    pub(super) lambda: f64,
-    pub(super) pi_network: MlpSettings,
-    pub(super) v_network: MlpSettings,
-    pub(super) epochs: usize,
-    pub(super) steps_per_epoch: usize,
-    pub(super) policy_update_strategy: PolicyUpdateStrategy,
-    pub(super) value_updates_per_epoch: usize,
+pub(in crate::algorithms) struct PolicyGradientConfig {
+    pub(in crate::algorithms) objective: PolicyObjective,
+    pub(in crate::algorithms) gamma: f64,
+    pub(in crate::algorithms) lambda: f64,
+    pub(in crate::algorithms) pi_network: MlpSettings,
+    pub(in crate::algorithms) v_network: MlpSettings,
+    pub(in crate::algorithms) epochs: usize,
+    pub(in crate::algorithms) steps_per_epoch: usize,
+    pub(in crate::algorithms) policy_update_strategy: PolicyUpdateStrategy,
+    pub(in crate::algorithms) value_updates_per_epoch: usize,
 }
 
 pub struct StochasticPolicyGradient<Action = usize> {

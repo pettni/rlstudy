@@ -6,10 +6,6 @@ use ndarray::{Array1, Array2, Array3};
 use num_traits::abs;
 use serde::{Deserialize, Serialize};
 
-mod cli;
-
-pub use cli::{PolicyIterationArgs, TruncatedPolicyIterationArgs, ValueIterationArgs};
-
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ValueIterationConfig {

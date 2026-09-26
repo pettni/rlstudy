@@ -1,7 +1,8 @@
-use super::ApproximateTDConfig;
-use crate::network::{Activation, MlpSettings};
-use crate::schedule::Schedule;
 use clap::Args;
+use rlstudy::{
+    algorithms::{ApproximateTDConfig, Schedule},
+    network::{Activation, MlpSettings},
+};
 
 #[derive(Debug, Clone, PartialEq, Args)]
 pub struct ApproximateTDArgs {

@@ -1,5 +1,5 @@
-use super::{TDConfig, TDVariant};
 use clap::Args;
+use rlstudy::algorithms::{TDConfig, TDVariant};
 
 #[derive(Debug, Clone, PartialEq, Args)]
 pub struct TDArgs {

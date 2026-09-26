@@ -21,10 +21,6 @@ use ndarray::Array1;
 use rand::RngExt;
 use serde::{Deserialize, Serialize};
 
-mod cli;
-
-pub use cli::ActorCriticArgs;
-
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ActorCriticConfig {

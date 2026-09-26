@@ -1,12 +1,31 @@
+mod actor_critic;
+mod approximate_td;
+mod ddpg;
+mod dqn;
+mod monte_carlo;
+mod policy_iteration;
+mod ppo;
+mod reinforce;
+mod td;
+mod td3;
+mod truncated_policy_iteration;
+mod value_iteration;
+mod vpg;
+
+use self::{
+    actor_critic::ActorCriticArgs, approximate_td::ApproximateTDArgs, ddpg::DdpgArgs, dqn::DqnArgs,
+    monte_carlo::MonteCarloArgs, policy_iteration::PolicyIterationArgs, ppo::PpoArgs,
+    reinforce::ReinforceArgs, td::TDArgs, td3::Td3Args,
+    truncated_policy_iteration::TruncatedPolicyIterationArgs, value_iteration::ValueIterationArgs,
+    vpg::VanillaPolicyGradientArgs,
+};
 use clap::Subcommand;
 use rlstudy::algorithms::{
-    ActorCritic, ActorCriticArgs, ActorCriticConfig, ApproximateTD, ApproximateTDArgs,
-    ApproximateTDConfig, DdpgArgs, DdpgConfig, DeepQLearning, DeterministicPolicyGradient, DqnArgs,
-    DqnConfig, MonteCarlo, MonteCarloArgs, MonteCarloConfig, PolicyIterationArgs,
-    PolicyIterationConfig, PpoArgs, PpoConfig, Reinforce, ReinforceArgs, ReinforceConfig,
-    StochasticPolicyGradient, TD, TDArgs, TDConfig, Td3Args, Td3Config, TruncatedPolicyIteration,
-    TruncatedPolicyIterationArgs, TruncatedPolicyIterationConfig, ValueIterationArgs,
-    ValueIterationConfig, VanillaPolicyGradientArgs, VanillaPolicyGradientConfig,
+    ActorCritic, ActorCriticConfig, ApproximateTD, ApproximateTDConfig, DdpgConfig, DeepQLearning,
+    DeterministicPolicyGradient, DqnConfig, MonteCarlo, MonteCarloConfig, PolicyIterationConfig,
+    PpoConfig, Reinforce, ReinforceConfig, StochasticPolicyGradient, TD, TDConfig, Td3Config,
+    TruncatedPolicyIteration, TruncatedPolicyIterationConfig, ValueIterationConfig,
+    VanillaPolicyGradientConfig,
 };
 use serde::{Serialize, de::DeserializeOwned};
 use std::{fs, path::Path};
@@ -223,8 +242,8 @@ mod tests {
     #[test]
     fn checked_in_dqn_configs_parse() {
         for contents in [
-            include_str!("../../settings/zhao_5x5/dqn.yaml"),
-            include_str!("../../settings/cartpole/dqn.yaml"),
+            include_str!("../../../settings/zhao_5x5/dqn.yaml"),
+            include_str!("../../../settings/cartpole/dqn.yaml"),
         ] {
             let config: DqnConfig = yaml_serde::from_str(contents).unwrap();
             assert!(rlstudy::algorithms::DeepQLearning::new(config).is_ok());
@@ -234,7 +253,8 @@ mod tests {
     #[test]
     fn checked_in_policy_gradient_config_parses() {
         let config: ReinforceConfig =
-            yaml_serde::from_str(include_str!("../../settings/cartpole/reinforce.yaml")).unwrap();
+            yaml_serde::from_str(include_str!("../../../settings/cartpole/reinforce.yaml"))
+                .unwrap();
 
         assert!(rlstudy::algorithms::Reinforce::new(config).is_ok());
     }
@@ -242,7 +262,7 @@ mod tests {
     #[test]
     fn checked_in_actor_critic_config_parses() {
         let config: ActorCriticConfig =
-            yaml_serde::from_str(include_str!("../../settings/cartpole/actor_critic.yaml"))
+            yaml_serde::from_str(include_str!("../../../settings/cartpole/actor_critic.yaml"))
                 .unwrap();
 
         assert!(rlstudy::algorithms::ActorCritic::new(config).is_ok());
@@ -251,7 +271,7 @@ mod tests {
     #[test]
     fn checked_in_vpg_config_parses() {
         let config: VanillaPolicyGradientConfig =
-            yaml_serde::from_str(include_str!("../../settings/cartpole/vpg.yaml")).unwrap();
+            yaml_serde::from_str(include_str!("../../../settings/cartpole/vpg.yaml")).unwrap();
 
         assert!(rlstudy::algorithms::StochasticPolicyGradient::vpg(config).is_ok());
     }
@@ -259,14 +279,14 @@ mod tests {
     #[test]
     fn checked_in_ppo_config_parses() {
         let config: PpoConfig =
-            yaml_serde::from_str(include_str!("../../settings/cartpole/ppo.yaml")).unwrap();
+            yaml_serde::from_str(include_str!("../../../settings/cartpole/ppo.yaml")).unwrap();
         assert!(rlstudy::algorithms::StochasticPolicyGradient::ppo(config).is_ok());
     }
 
     #[test]
     fn checked_in_approximate_td_config_parses() {
         let config: ApproximateTDConfig = yaml_serde::from_str(include_str!(
-            "../../settings/mountain_car/approximate_td.yaml"
+            "../../../settings/mountain_car/approximate_td.yaml"
         ))
         .unwrap();
 
@@ -276,7 +296,7 @@ mod tests {
     #[test]
     fn checked_in_ddpg_config_parses() {
         let config: DdpgConfig =
-            yaml_serde::from_str(include_str!("../../settings/half_cheetah/ddpg.yaml")).unwrap();
+            yaml_serde::from_str(include_str!("../../../settings/half_cheetah/ddpg.yaml")).unwrap();
 
         assert!(rlstudy::algorithms::DeterministicPolicyGradient::new(config.into()).is_ok());
     }

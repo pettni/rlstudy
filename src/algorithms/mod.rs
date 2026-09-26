@@ -5,32 +5,32 @@ use crate::reporting::{Reporter, ReporterConfig};
 
 pub mod actor_critic;
 pub mod approximate_td;
-pub mod deterministic_policy_gradient;
+pub mod ddpg;
 pub mod dqn;
 pub mod monte_carlo;
+mod policy_gradient;
 pub mod policy_iteration;
+pub mod ppo;
 pub mod reinforce;
-pub mod stochastic_policy_gradient;
 pub mod td;
+pub mod td3;
+pub mod vpg;
 
-pub use actor_critic::{ActorCritic, ActorCriticArgs, ActorCriticConfig};
-pub use approximate_td::{ApproximateTD, ApproximateTDArgs, ApproximateTDConfig};
-pub use deterministic_policy_gradient::{
-    DdpgArgs, DdpgConfig, DeterministicPolicyGradient, Td3Args, Td3Config,
-};
-pub use dqn::{DeepQLearning, DqnArgs, DqnConfig, DqnMode, Loss, Schedule, TargetUpdateConfig};
-pub use monte_carlo::{MonteCarlo, MonteCarloArgs, MonteCarloConfig};
+pub use actor_critic::{ActorCritic, ActorCriticConfig};
+pub use approximate_td::{ApproximateTD, ApproximateTDConfig};
+pub use ddpg::DdpgConfig;
+pub use dqn::{DeepQLearning, DqnConfig, DqnMode, Loss, Schedule, TargetUpdateConfig};
+pub use monte_carlo::{MonteCarlo, MonteCarloConfig};
+pub use policy_gradient::{DeterministicPolicyGradient, StochasticPolicyGradient};
 pub use policy_iteration::{
-    PolicyIterationArgs, PolicyIterationConfig, StoppingCriterion, TruncatedPolicyIteration,
-    TruncatedPolicyIterationArgs, TruncatedPolicyIterationConfig, ValueIterationArgs,
-    ValueIterationConfig,
+    PolicyIterationConfig, StoppingCriterion, TruncatedPolicyIteration,
+    TruncatedPolicyIterationConfig, ValueIterationConfig,
 };
-pub use reinforce::{Reinforce, ReinforceArgs, ReinforceConfig};
-pub use stochastic_policy_gradient::{
-    PpoArgs, PpoConfig, StochasticPolicyGradient, VanillaPolicyGradientArgs,
-    VanillaPolicyGradientConfig,
-};
-pub use td::{TD, TDArgs, TDConfig, TDVariant};
+pub use ppo::PpoConfig;
+pub use reinforce::{Reinforce, ReinforceConfig, UpdateVariant};
+pub use td::{TD, TDConfig, TDVariant};
+pub use td3::Td3Config;
+pub use vpg::VanillaPolicyGradientConfig;
 
 pub trait ModelBasedSolver {
     type Observation;

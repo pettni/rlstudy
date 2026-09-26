@@ -1,4 +1,4 @@
-use super::algorithm::DeterministicPolicyGradientConfig;
+use super::policy_gradient::DeterministicPolicyGradientConfig;
 use crate::network::MlpSettings;
 use serde::{Deserialize, Serialize};
 

@@ -1,5 +1,5 @@
-use super::MonteCarloConfig;
 use clap::Args;
+use rlstudy::algorithms::MonteCarloConfig;
 
 #[derive(Debug, Clone, PartialEq, Args)]
 pub struct MonteCarloArgs {

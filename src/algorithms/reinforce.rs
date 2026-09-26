@@ -21,10 +21,6 @@ use ndarray::Array1;
 use rand::RngExt;
 use serde::{Deserialize, Serialize};
 
-mod cli;
-
-pub use cli::ReinforceArgs;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum UpdateVariant {
@@ -42,7 +38,7 @@ pub struct ReinforceConfig {
     pub v_network: MlpSettings,
     pub episodes: usize,
     pub episode_length: usize,
-    gradient_clip_value: Option<f32>,
+    pub gradient_clip_value: Option<f32>,
     pub critic: Option<UpdateVariant>,
 }
 

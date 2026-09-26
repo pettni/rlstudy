@@ -1,7 +1,5 @@
-mod cli;
 mod trainer;
 
-pub use self::cli::DqnArgs;
 use self::trainer::DqnTrainer;
 use crate::algorithms::{ModelFreeSolver, SolveResult, SolveStatus, validate_gamma};
 use crate::environment::{Environment, Rollout, Space};

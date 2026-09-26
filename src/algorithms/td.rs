@@ -6,10 +6,6 @@ use clap::ValueEnum;
 use ndarray::{Array2, ArrayView1};
 use serde::{Deserialize, Serialize};
 
-mod cli;
-
-pub use cli::TDArgs;
-
 /// TD-family of model-free control algorithm.
 ///
 /// Given (s_t, a_t, r_{t+1}, s_{t+1}, a_{t+1}) update the q estimate as

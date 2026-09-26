@@ -5,10 +5,6 @@ use crate::reporting::{Reporter, Step};
 use ndarray::Array2;
 use serde::{Deserialize, Serialize};
 
-mod cli;
-
-pub use cli::MonteCarloArgs;
-
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct MonteCarloConfig {
