@@ -1,9 +1,12 @@
 use burn::{
     module::Module,
-    tensor::{Int, Tensor, activation::log_softmax, backend::Backend},
+    tensor::{
+        ElementConversion, Int, Tensor, TensorData,
+        activation::{log_softmax, softmax},
+        backend::Backend,
+    },
 };
 use ndarray::Array1;
-use rand::RngExt;
 
 use super::Actor;
 use crate::{
@@ -35,50 +38,14 @@ impl<B: Backend> CategoricalActor<B> {
     }
 }
 
-impl<B> CategoricalActor<B>
-where
-    B: Backend<Device = Device>,
-{
-    fn probabilities(&self, observation: &Array1<f64>) -> Array1<f64> {
-        let observation = Tensor::<B, 2>::from_data(
-            burn::tensor::TensorData::new(observation.to_vec(), [1, observation.len()]),
-            device(),
-        );
-        let logits = Array1::from_iter(
-            self.forward(observation)
-                .squeeze_dim::<1>(0)
-                .into_data()
-                .iter::<f64>(),
-        );
-        let max_logit = logits.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-        let weights = logits.mapv(|logit| (logit - max_logit).exp());
-        &weights / weights.sum()
-    }
-}
-
-impl<B> Policy for CategoricalActor<B>
-where
-    B: Backend<Device = Device>,
-{
-    type Observation = Array1<f64>;
-    type Action = usize;
-
-    fn sample_action(
+impl<B: Backend<Device = Device>> CategoricalActor<B> {
+    fn sample_actions_impl(
         &self,
-        observation: &Self::Observation,
-        rng: &mut dyn rand::Rng,
-    ) -> Self::Action {
-        let probabilities = self.probabilities(observation);
-        let sample: f64 = rng.random();
-        let mut cumulative = 0.0;
-        for (action, probability) in probabilities.iter().enumerate() {
-            cumulative += probability;
-            if sample < cumulative {
-                return action;
-            }
-        }
-
-        probabilities.len() - 1
+        observations: Tensor<B, 2>,
+        _rng: &mut dyn rand::Rng,
+    ) -> Tensor<B, 1, Int> {
+        let probs = softmax(self.forward(observations), 1);
+        probs.categorical(1).squeeze_dim(1)
     }
 }
 
@@ -95,10 +62,32 @@ impl Actor<usize> for CategoricalActor<TrainingBackend> {
             .squeeze_dim(1)
     }
 
+    fn sample_actions(
+        &self,
+        states: Tensor<TrainingBackend, 2>,
+        rng: &mut dyn rand::Rng,
+    ) -> <usize as crate::network::action::ActionType>::TensorType {
+        self.sample_actions_impl(states, rng)
+    }
+
     fn entropy(&self, states: Tensor<TrainingBackend, 2>) -> Tensor<TrainingBackend, 1> {
         let log_probs = log_softmax(self.forward(states), 1);
         -(log_probs.clone().exp() * log_probs)
             .sum_dim(1)
             .squeeze_dim(1)
+    }
+}
+
+impl<B: Backend<Device = Device>> Policy for CategoricalActor<B> {
+    type Observation = Array1<f64>;
+    type Action = usize;
+
+    fn sample_action(&self, state: &Array1<f64>, rng: &mut dyn rand::Rng) -> Self::Action {
+        let state =
+            Tensor::<B, 2>::from_data(TensorData::new(state.to_vec(), [1, state.len()]), device());
+
+        let action = self.sample_actions_impl(state, rng);
+
+        action.into_scalar().elem::<i64>() as usize
     }
 }

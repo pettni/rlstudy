@@ -12,6 +12,7 @@ mod policy_gradient;
 pub mod policy_iteration;
 pub mod ppo;
 pub mod reinforce;
+pub mod sac;
 pub mod td;
 pub mod td3;
 pub mod vpg;

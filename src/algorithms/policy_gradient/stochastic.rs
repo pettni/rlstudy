@@ -9,6 +9,7 @@ use crate::reporting::{MetricAverages, Reporter, Step};
 use crate::schedule::Schedule;
 use crate::transition_buffer::TransitionBuffer;
 use burn::{
+    module::AutodiffModule,
     optim::{AdamConfig, GradientsParams, Optimizer},
     tensor::{ElementConversion, backend::Backend},
 };
@@ -58,12 +59,66 @@ pub(in crate::algorithms) struct PolicyGradientConfig {
     pub(in crate::algorithms) value_updates_per_epoch: usize,
 }
 
+trait PolicyGradientAction: ActionType {
+    type Actor: Actor<Self>;
+
+    fn create_actor(
+        settings: &MlpSettings,
+        state_dim: usize,
+        action_space: Space,
+    ) -> Result<Self::Actor, String>;
+}
+
+impl PolicyGradientAction for usize {
+    type Actor = CategoricalActor<TrainingBackend>;
+
+    fn create_actor(
+        settings: &MlpSettings,
+        state_dim: usize,
+        action_space: Space,
+    ) -> Result<Self::Actor, String> {
+        let Space::Discrete { size: action_dim } = action_space else {
+            return Err("Policy gradient requires a discrete action space".into());
+        };
+
+        Ok(CategoricalActor::new(
+            state_dim,
+            &settings.hidden_dims,
+            action_dim,
+            settings.activation,
+            device(),
+        ))
+    }
+}
+
+impl PolicyGradientAction for Array1<f64> {
+    type Actor = GaussianActor<TrainingBackend>;
+
+    fn create_actor(
+        settings: &MlpSettings,
+        state_dim: usize,
+        action_space: Space,
+    ) -> Result<Self::Actor, String> {
+        let action_dim = action_space
+            .continuous_dim()
+            .ok_or("Policy gradient requires a continuous action space")?;
+
+        Ok(GaussianActor::new(
+            state_dim,
+            &settings.hidden_dims,
+            action_dim,
+            settings.activation,
+            device(),
+        ))
+    }
+}
+
 pub struct StochasticPolicyGradient<Action = usize> {
     config: PolicyGradientConfig,
     action: PhantomData<Action>,
 }
 
-impl StochasticPolicyGradient<usize> {
+impl<Action> StochasticPolicyGradient<Action> {
     pub fn vpg(config: VanillaPolicyGradientConfig) -> Result<Self, String> {
         Self::new(config.into())
     }
@@ -99,30 +154,35 @@ impl StochasticPolicyGradient<usize> {
             action: PhantomData,
         })
     }
-
-    pub fn continuous(self) -> StochasticPolicyGradient<Array1<f64>> {
-        StochasticPolicyGradient {
-            config: self.config,
-            action: PhantomData,
-        }
-    }
 }
 
-impl<Action> StochasticPolicyGradient<Action> {
-    fn train<A: ActionType, P: Actor<A>>(
+impl<Action> ModelFreeSolver for StochasticPolicyGradient<Action>
+where
+    Action: PolicyGradientAction,
+    <Action::Actor as Actor<Action>>::InferencePolicy: 'static,
+{
+    type Observation = Array1<f64>;
+    type Action = Action;
+
+    fn solve_with_reporter(
         &self,
-        env: &mut dyn Environment<Observation = Array1<f64>, Action = A>,
+        env: &mut dyn Environment<Observation = Self::Observation, Action = Self::Action>,
         rng: &mut dyn rand::Rng,
-        reporter: &mut Reporter<'_, Array1<f64>, A>,
-        pi: P,
-        n_s: usize,
-    ) -> (P::InferencePolicy, SolveStatus) {
-        let mut pi = pi;
-        let mut pi_optimizer: AdamOptimizer<P> = AdamConfig::new().init();
+        reporter: &mut Reporter<'_, Self::Observation, Self::Action>,
+    ) -> Result<SolveResult<Self::Observation, Self::Action>, String> {
+        let n_s = env
+            .state_space()
+            .continuous_dim()
+            .ok_or("Policy gradient requires a continuous state space")?;
+
+        <TrainingBackend as Backend>::seed(device(), rng.random());
+        let mut pi = Action::create_actor(&self.config.pi_network, n_s, env.action_space())?;
+        let mut pi_optimizer: AdamOptimizer<Action::Actor> = AdamConfig::new().init();
         let mut v = self.config.v_network.init(n_s, 1);
         let mut v_optimizer: AdamOptimizer<MlpModel<TrainingBackend>> = AdamConfig::new().init();
 
-        let mut buffer = TransitionBuffer::<A>::with_capacity(self.config.steps_per_epoch, None);
+        let mut buffer =
+            TransitionBuffer::<Action>::with_capacity(self.config.steps_per_epoch, None);
         let mut rollout = Rollout::new(env, rng);
 
         for epoch in 0..self.config.epochs {
@@ -235,80 +295,11 @@ impl<Action> StochasticPolicyGradient<Action> {
             reporter.policy(step, || pi.valid());
         }
 
-        (
-            pi.valid(),
-            SolveStatus::IterationLimit {
+        Ok(SolveResult {
+            policy: Box::new(pi.valid()),
+            status: SolveStatus::IterationLimit {
                 iterations: self.config.epochs,
             },
-        )
-    }
-}
-
-impl ModelFreeSolver for StochasticPolicyGradient {
-    type Observation = Array1<f64>;
-    type Action = usize;
-
-    fn solve_with_reporter(
-        &self,
-        env: &mut dyn Environment<Observation = Array1<f64>, Action = usize>,
-        rng: &mut dyn rand::Rng,
-        reporter: &mut Reporter<'_, Array1<f64>>,
-    ) -> Result<SolveResult<Array1<f64>>, String> {
-        let n_s = env
-            .state_space()
-            .continuous_dim()
-            .ok_or("Policy gradient requires a continuous state space")?;
-        let Space::Discrete { size: n_a } = env.action_space() else {
-            return Err("Policy gradient requires a discrete action space".into());
-        };
-
-        <TrainingBackend as Backend>::seed(device(), rng.random());
-        let pi = CategoricalActor::new(
-            n_s,
-            &self.config.pi_network.hidden_dims,
-            n_a,
-            self.config.pi_network.activation,
-            device(),
-        );
-        let (pi, status) = self.train(env, rng, reporter, pi, n_s);
-        Ok(SolveResult {
-            policy: Box::new(pi),
-            status,
-        })
-    }
-}
-
-impl ModelFreeSolver for StochasticPolicyGradient<Array1<f64>> {
-    type Observation = Array1<f64>;
-    type Action = Array1<f64>;
-
-    fn solve_with_reporter(
-        &self,
-        env: &mut dyn Environment<Observation = Array1<f64>, Action = Array1<f64>>,
-        rng: &mut dyn rand::Rng,
-        reporter: &mut Reporter<'_, Array1<f64>, Array1<f64>>,
-    ) -> Result<SolveResult<Array1<f64>, Array1<f64>>, String> {
-        let n_s = env
-            .state_space()
-            .continuous_dim()
-            .ok_or("Policy gradient requires a continuous state space")?;
-        let n_a = env
-            .action_space()
-            .continuous_dim()
-            .ok_or("Policy gradient requires a continuous action space")?;
-
-        <TrainingBackend as Backend>::seed(device(), rng.random());
-        let pi = GaussianActor::new(
-            n_s,
-            &self.config.pi_network.hidden_dims,
-            n_a,
-            self.config.pi_network.activation,
-            device(),
-        );
-        let (pi, status) = self.train(env, rng, reporter, pi, n_s);
-        Ok(SolveResult {
-            policy: Box::new(pi),
-            status,
         })
     }
 }
@@ -353,22 +344,22 @@ mod tests {
 
     #[test]
     fn trains_with_continuous_actions() {
-        let solver = StochasticPolicyGradient::vpg(VanillaPolicyGradientConfig {
-            pi_network: MlpSettings {
-                hidden_dims: vec![4],
-                ..MlpSettings::default()
-            },
-            v_network: MlpSettings {
-                hidden_dims: vec![4],
-                ..MlpSettings::default()
-            },
-            epochs: 1,
-            steps_per_epoch: 8,
-            value_updates_per_epoch: 1,
-            ..Default::default()
-        })
-        .unwrap()
-        .continuous();
+        let solver: StochasticPolicyGradient<Array1<f64>> =
+            StochasticPolicyGradient::vpg(VanillaPolicyGradientConfig {
+                pi_network: MlpSettings {
+                    hidden_dims: vec![4],
+                    ..MlpSettings::default()
+                },
+                v_network: MlpSettings {
+                    hidden_dims: vec![4],
+                    ..MlpSettings::default()
+                },
+                epochs: 1,
+                steps_per_epoch: 8,
+                value_updates_per_epoch: 1,
+                ..Default::default()
+            })
+            .unwrap();
         let mut environment = ContinuousBandit;
         let mut rng = StdRng::seed_from_u64(0);
 

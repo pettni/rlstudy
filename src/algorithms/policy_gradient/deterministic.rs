@@ -25,6 +25,7 @@ pub struct TargetNoise {
 #[serde(default, deny_unknown_fields)]
 pub struct DeterministicPolicyGradientConfig {
     pub gamma: f64,
+    pub iterations: usize,
     pub batch_size: usize,
     pub replay_capacity: usize,
     pub warm_up_transitions: usize,
@@ -32,7 +33,6 @@ pub struct DeterministicPolicyGradientConfig {
     pub q_updates_per_iteration: usize,
     pub pi_updates_every_n_q_updates: usize,
     pub exploration_noise: Option<f64>,
-    pub iterations: usize,
     pub ema_rate: f64,
     pub q_network: MlpSettings,
     pub double_q_learning: bool,
@@ -44,6 +44,7 @@ impl Default for DeterministicPolicyGradientConfig {
     fn default() -> Self {
         Self {
             gamma: 0.99,
+            iterations: 1_000,
             batch_size: 64,
             replay_capacity: 1_000,
             warm_up_transitions: 64,
@@ -51,7 +52,6 @@ impl Default for DeterministicPolicyGradientConfig {
             q_updates_per_iteration: 1,
             pi_updates_every_n_q_updates: 1,
             exploration_noise: None,
-            iterations: 1_000,
             ema_rate: 0.01,
             q_network: MlpSettings::default(),
             double_q_learning: false,
@@ -113,15 +113,13 @@ impl ModelFreeSolver for DeterministicPolicyGradient {
         let mut pi_optimizer: AdamOptimizer<MlpModel<TrainingBackend>> = AdamConfig::new().init();
         let mut pi_target = pi.clone();
 
-        let q_model_factory = || self.config.q_network.init(n_s + n_a, 1);
-
-        let mut q1 = Qdata::new(q_model_factory());
-        let mut q2 = Qdata::new(q_model_factory());
+        let mut q1 = Qdata::new(self.config.q_network.init(n_s + n_a, 1));
+        let mut q2 = Qdata::new(self.config.q_network.init(n_s + n_a, 1));
 
         let mut buffer = TransitionBuffer::<Self::Action>::new(Some(self.config.replay_capacity));
 
         let mut rollout = Rollout::new(env, rng);
-        let warmup_policy = UniformContinuousPolicy::new(&action_low, &action_high);
+        let warmup_policy = UniformContinuousPolicy::new(action_low.clone(), action_high.clone());
         buffer.fill_n(
             self.config.warm_up_transitions,
             &mut rollout,

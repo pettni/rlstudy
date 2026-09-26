@@ -293,8 +293,9 @@ fn run_solver(
             };
             Ok((SelectedResult::Neural(result, history), stats))
         }
-        SelectedSolver::Vpg(solver) | SelectedSolver::Ppo(solver) => match system {
+        SelectedSolver::StochasticPolicyGradient(solver) => match system {
             SelectedSystem::Model(model) => {
+                let solver = solver.build()?;
                 let mut environment = FeatureEnvironment::new(model)?;
                 let mut evaluation_environment = FeatureEnvironment::new(model)?;
                 let (result, history, stats) = run_model_free(
@@ -308,6 +309,7 @@ fn run_solver(
                 Ok((SelectedResult::Neural(result, history), stats))
             }
             SelectedSystem::DiscreteGym(environment) => {
+                let solver = solver.build()?;
                 let mut evaluation_environment =
                     discrete_gym(gym_id.expect("Gym ID is present"), gym_options)?;
                 let (result, history, stats) = run_model_free(
@@ -321,7 +323,7 @@ fn run_solver(
                 Ok((SelectedResult::Neural(result, history), stats))
             }
             SelectedSystem::ContinuousGym(environment) => {
-                let solver = solver.continuous();
+                let solver = solver.build()?;
                 let mut evaluation_environment =
                     continuous_gym(gym_id.expect("Gym ID is present"), gym_options)?;
                 let (result, history, stats) = run_model_free(

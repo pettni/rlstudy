@@ -75,10 +75,23 @@ pub(super) enum SelectedSolver {
     Ddpg(DeterministicPolicyGradient),
     Td3(DeterministicPolicyGradient),
     Reinforce(Reinforce),
-    Vpg(StochasticPolicyGradient),
-    Ppo(StochasticPolicyGradient),
+    StochasticPolicyGradient(SelectedStochasticPolicyGradient),
     ActorCritic(ActorCritic),
     ApproximateTD(ApproximateTD),
+}
+
+pub(super) enum SelectedStochasticPolicyGradient {
+    Vpg(VanillaPolicyGradientConfig),
+    Ppo(PpoConfig),
+}
+
+impl SelectedStochasticPolicyGradient {
+    pub(super) fn build<Action>(self) -> Result<StochasticPolicyGradient<Action>, String> {
+        match self {
+            Self::Vpg(config) => StochasticPolicyGradient::vpg(config),
+            Self::Ppo(config) => StochasticPolicyGradient::ppo(config),
+        }
+    }
 }
 
 pub(super) fn build_solver(
@@ -150,14 +163,18 @@ pub(super) fn build_solver(
             let (config, parameters): (VanillaPolicyGradientConfig, _) =
                 resolve_config(args, config_path)?;
             Ok((
-                SelectedSolver::Vpg(StochasticPolicyGradient::vpg(config)?),
+                SelectedSolver::StochasticPolicyGradient(SelectedStochasticPolicyGradient::Vpg(
+                    config,
+                )),
                 parameters,
             ))
         }
         Solver::Ppo(args) => {
             let (config, parameters): (PpoConfig, _) = resolve_config(args, config_path)?;
             Ok((
-                SelectedSolver::Ppo(StochasticPolicyGradient::ppo(config)?),
+                SelectedSolver::StochasticPolicyGradient(SelectedStochasticPolicyGradient::Ppo(
+                    config,
+                )),
                 parameters,
             ))
         }
@@ -210,7 +227,7 @@ where
 mod tests {
     use rlstudy::algorithms::{
         ActorCriticConfig, ApproximateTDConfig, DdpgConfig, DqnConfig, PpoConfig, ReinforceConfig,
-        VanillaPolicyGradientConfig,
+        StochasticPolicyGradient, VanillaPolicyGradientConfig,
     };
 
     #[test]
@@ -273,14 +290,16 @@ mod tests {
         let config: VanillaPolicyGradientConfig =
             yaml_serde::from_str(include_str!("../../../settings/cartpole/vpg.yaml")).unwrap();
 
-        assert!(rlstudy::algorithms::StochasticPolicyGradient::vpg(config).is_ok());
+        let solver: Result<StochasticPolicyGradient, _> = StochasticPolicyGradient::vpg(config);
+        assert!(solver.is_ok());
     }
 
     #[test]
     fn checked_in_ppo_config_parses() {
         let config: PpoConfig =
             yaml_serde::from_str(include_str!("../../../settings/cartpole/ppo.yaml")).unwrap();
-        assert!(rlstudy::algorithms::StochasticPolicyGradient::ppo(config).is_ok());
+        let solver: Result<StochasticPolicyGradient, _> = StochasticPolicyGradient::ppo(config);
+        assert!(solver.is_ok());
     }
 
     #[test]

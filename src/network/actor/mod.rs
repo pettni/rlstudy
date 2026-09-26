@@ -1,5 +1,6 @@
 mod categorical;
 mod gaussian;
+mod squashed_gaussian;
 
 use crate::{
     backend::{TrainingBackend, device},
@@ -12,6 +13,7 @@ use ndarray::Array1;
 
 pub use categorical::CategoricalActor;
 pub use gaussian::GaussianActor;
+pub use squashed_gaussian::SquashedGaussianActor;
 
 pub trait Actor<A: ActionType>:
     AutodiffModule<TrainingBackend, InnerModule = Self::InferencePolicy>
@@ -29,6 +31,12 @@ pub trait Actor<A: ActionType>:
 
         self.log_probs(states, &actions).into_scalar().elem::<f64>()
     }
+
+    fn sample_actions(
+        &self,
+        states: Tensor<TrainingBackend, 2>,
+        rng: &mut dyn rand::Rng,
+    ) -> A::TensorType;
 
     fn log_probs(
         &self,

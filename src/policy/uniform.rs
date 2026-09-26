@@ -21,18 +21,18 @@ impl DiscretePolicy for UniformPolicy {
     }
 }
 
-pub struct UniformContinuousPolicy<'a> {
-    low: &'a Array1<f64>,
-    high: &'a Array1<f64>,
+pub struct UniformContinuousPolicy {
+    low: Array1<f64>,
+    high: Array1<f64>,
 }
 
-impl<'a> UniformContinuousPolicy<'a> {
-    pub fn new(low: &'a Array1<f64>, high: &'a Array1<f64>) -> Self {
+impl UniformContinuousPolicy {
+    pub fn new(low: Array1<f64>, high: Array1<f64>) -> Self {
         Self { low, high }
     }
 }
 
-impl Policy for UniformContinuousPolicy<'_> {
+impl Policy for UniformContinuousPolicy {
     type Observation = Array1<f64>;
     type Action = Array1<f64>;
 
@@ -44,8 +44,8 @@ impl Policy for UniformContinuousPolicy<'_> {
         Array1::from_iter(
             self.low
                 .iter()
-                .zip(self.high)
-                .map(|(&low, &high)| rng.random_range(low..high)),
+                .zip(&self.high)
+                .map(|(&low, high)| rng.random_range(low..*high)),
         )
     }
 }
