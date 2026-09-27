@@ -1,18 +1,20 @@
-mod trainer;
+pub use crate::network::loss::Loss;
+pub use crate::schedule::Schedule;
 
-use self::trainer::DqnTrainer;
 use crate::algorithms::{ModelFreeSolver, SolveResult, SolveStatus, validate_gamma};
+use crate::backend::{TrainingBackend, device};
 use crate::environment::{Environment, Rollout, Space};
 use crate::network::MlpSettings;
-pub use crate::network::loss::Loss;
-use crate::policy::{
-    DiscretePolicy,
-    dq::{DeepQPolicy, DeepQPolicyMode},
-    uniform::UniformPolicy,
-};
+use crate::network::{AdamOptimizer, MlpModel, ema, gradient_norm};
+use crate::policy::dq::{DeepQPolicy, DeepQPolicyMode};
+use crate::policy::{DiscretePolicy, uniform::UniformPolicy};
 use crate::reporting::{Reporter, Step};
-pub use crate::schedule::Schedule;
 use crate::transition_buffer::TransitionBuffer;
+use burn::{
+    module::AutodiffModule,
+    optim::{AdamConfig, GradientsParams, Optimizer, grad_clipping::GradientClippingConfig},
+    tensor::{ElementConversion, backend::Backend},
+};
 use clap::ValueEnum;
 use ndarray::Array1;
 use rand::RngExt;
@@ -132,6 +134,8 @@ impl ModelFreeSolver for DeepQLearning {
             return Err("DQN requires a discrete action space".into());
         };
 
+        <TrainingBackend as Backend>::seed(device(), rng.random());
+
         let mut rollout = Rollout::new(env, rng);
         let f_dim = rollout.observation().len();
         let default_behavior_policy = UniformPolicy::new(n_a);
@@ -149,14 +153,16 @@ impl ModelFreeSolver for DeepQLearning {
             rng,
         );
 
-        let mut trainer = DqnTrainer::new(
-            f_dim,
-            &self.config.q_network,
-            n_a,
-            self.config.gradient_clip_value,
-            self.config.mode,
-            rng.random(),
-        );
+        let mut q_pred = self.config.q_network.init(f_dim, n_a);
+        let mut q_target = q_pred.clone();
+        let mut optimizer: AdamOptimizer<MlpModel<TrainingBackend>> = AdamConfig::new()
+            .with_grad_clipping(
+                self.config
+                    .gradient_clip_value
+                    .map(GradientClippingConfig::Value),
+            )
+            .init();
+
         let mut iter = 0;
         for episode in 0..self.config.episodes {
             let learning_rate = self.config.q_network.learning_rate.value(episode);
@@ -167,29 +173,48 @@ impl ModelFreeSolver for DeepQLearning {
 
             for step_index in 0.. {
                 let epsilon = self.config.epsilon_schedule.value(iter);
-                let behavior_policy = trainer.policy_view(DeepQPolicyMode::SoftGreedy { epsilon });
+                let behavior_policy =
+                    DeepQPolicy::borrowed(&q_pred, DeepQPolicyMode::SoftGreedy { epsilon });
                 let transition = buffer.fill_one(&mut rollout, &behavior_policy, rng);
                 episode_return += transition.r;
                 episode_length = step_index + 1;
                 let done = transition.terminated || transition.truncated;
 
                 let batch = buffer.random_batch_tensor_data(self.config.batch_size, rng);
-                let (new_trainer, loss, gradient_norm) =
-                    trainer.update(batch, learning_rate, self.config.gamma, self.config.loss);
-                trainer = new_trainer;
+
+                let predicted = q_pred
+                    .forward(batch.s)
+                    .gather(1, batch.a.reshape([-1, 1]))
+                    .squeeze_dim(1);
+                let actions = match self.config.mode {
+                    DqnMode::Dqn => q_target.forward(batch.sp.clone()).argmax(1),
+                    DqnMode::Ddqn => q_pred.forward(batch.sp.clone()).argmax(1),
+                };
+                let next_values = q_target.forward(batch.sp).gather(1, actions).squeeze_dim(1);
+                let td_target = batch.r
+                    + batch.terminated.bool_not().float()
+                        * self.config.gamma
+                        * next_values.detach();
+
+                let loss = self.config.loss.forward(predicted, td_target);
+                let loss_value = loss.clone().into_scalar().elem::<f64>();
+                let gradients = GradientsParams::from_grads(loss.backward(), &q_pred);
+                let gradient_norm = gradient_norm(&q_pred, &gradients);
+
+                q_pred = optimizer.step(learning_rate, q_pred, gradients);
 
                 match self.config.target_update {
                     TargetUpdateConfig::Hard { steps } if (iter + 1) % steps == 0 => {
-                        trainer.sync_target();
+                        q_target = q_pred.clone();
                     }
                     TargetUpdateConfig::Soft { rate } => {
-                        trainer.soft_update_target(rate);
+                        q_target = ema::update(q_target, &q_pred, rate);
                     }
                     _ => {}
                 }
 
                 iter += 1;
-                episode_loss += loss;
+                episode_loss += loss_value;
                 episode_gradient_norm += gradient_norm;
                 if done {
                     break;
@@ -211,12 +236,12 @@ impl ModelFreeSolver for DeepQLearning {
                 ],
             );
             reporter.policy(step, || {
-                DeepQPolicy::new(trainer.inference_model(), DeepQPolicyMode::Greedy)
+                DeepQPolicy::new(q_pred.valid(), DeepQPolicyMode::Greedy)
             });
         }
 
         Ok(SolveResult {
-            policy: Box::new(trainer.into_policy()),
+            policy: Box::new(DeepQPolicy::new(q_pred.valid(), DeepQPolicyMode::Greedy)),
             status: SolveStatus::IterationLimit { iterations: iter },
         })
     }

@@ -5,10 +5,10 @@ use burn::{
 use ndarray::Array1;
 
 use super::{Actor, LOG_TWO_PI};
-use crate::network::{Activation, MlpModel};
+use crate::network::{Activation, MlpModel, TensorValue, state_tensor};
 use crate::policy::Policy;
 use crate::{
-    backend::{Device, InferenceBackend, TrainingBackend, device},
+    backend::{Device, InferenceBackend, TrainingBackend},
     environment::Space,
 };
 
@@ -135,12 +135,9 @@ impl Policy for SquashedGaussianActor<TrainingBackend> {
     type Action = Array1<f64>;
 
     fn sample_action(&self, state: &Array1<f64>, _rng: &mut dyn rand::Rng) -> Self::Action {
-        let state = Tensor::<TrainingBackend, 2>::from_data(
-            TensorData::new(state.to_vec(), [1, state.len()]),
-            device(),
-        );
+        let state = state_tensor::<TrainingBackend>(state);
         let (action, _) = self.sample_actions(state);
-        Array1::from_iter(action.into_data().iter())
+        Self::Action::from_singleton_tensor(action)
     }
 }
 
@@ -149,10 +146,7 @@ impl Policy for SquashedGaussianActor<InferenceBackend> {
     type Action = Array1<f64>;
 
     fn sample_action(&self, state: &Array1<f64>, _rng: &mut dyn rand::Rng) -> Self::Action {
-        let state = Tensor::<InferenceBackend, 2>::from_data(
-            TensorData::new(state.to_vec(), [1, state.len()]),
-            device(),
-        );
+        let state = state_tensor::<InferenceBackend>(state);
         let (mu, _) = self.parameters(state);
         let action = self.a.clone() + self.b.clone() * mu.tanh();
         Array1::from_iter(action.into_data().iter())

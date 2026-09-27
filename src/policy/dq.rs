@@ -1,12 +1,12 @@
 use std::borrow::Cow;
 
-use burn::tensor::{Tensor, TensorData, backend::Backend};
+use burn::tensor::backend::Backend;
 use ndarray::Array1;
 
 use super::DiscretePolicy;
 use crate::{
-    backend::{Device, device},
-    network::MlpModel,
+    backend::Device,
+    network::{MlpModel, state_tensor},
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -47,10 +47,7 @@ where
     type Observation = Array1<f64>;
 
     fn action_probabilities(&self, observation: &Array1<f64>) -> Array1<f64> {
-        let observation = Tensor::<B, 2>::from_data(
-            TensorData::new(observation.to_vec(), [1, observation.len()]),
-            device(),
-        );
+        let observation = state_tensor::<B>(observation);
         let q_a = Array1::from_iter(
             self.q_network
                 .forward(observation)

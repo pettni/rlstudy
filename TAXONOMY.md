@@ -53,6 +53,8 @@ Q-value.
 | Q-learning | Discrete | Discrete | Off-policy | Q | One-step TD using the greedy next action | None; policy derived from Q | Online |
 | DQN / DDQN | Continuous | Discrete | Off-policy | Neural Q | Q-learning target; DDQN separates next-action selection from evaluation | None; policy derived from Q | Replay batches |
 | DDPG | Continuous | Continuous | Off-policy | Deterministic policy and neural Q | One-step TD using the target policy and target Q | Q gradient through the critic | Replay batches |
+| TD3 | Continuous | Continuous | Off-policy | Deterministic policy and twin neural Q functions | One-step TD using a smoothed target policy and the smaller target Q | Q gradient through the critic with delayed policy updates | Replay batches |
+| SAC | Continuous | Discrete or continuous | Off-policy | Stochastic policy and twin neural Q functions | One-step soft TD using target critics and the entropy-regularized next policy | Expected Q plus entropy with fixed temperature | Replay batches |
 | REINFORCE | Continuous | Discrete or continuous | On-policy | Policy | None without a critic | Monte Carlo return | Episodes |
 | REINFORCE with baseline | Continuous | Discrete or continuous | On-policy | Policy and V | Monte Carlo or TD critic target | Return minus V(s) | Episodes |
 | Actor-critic | Continuous | Discrete or continuous | On-policy | Policy and V | One-step TD | TD error | Online |

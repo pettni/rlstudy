@@ -1,9 +1,8 @@
 use crate::algorithms::{ModelFreeSolver, SolveResult, SolveStatus};
 use crate::backend::{TrainingBackend, device};
 use crate::environment::{Environment, Rollout, Space};
-use crate::network::action::ActionType;
 use crate::network::actor::{Actor, CategoricalActor, SquashedGaussianActor};
-use crate::network::{AdamOptimizer, MlpModel, MlpSettings, ema};
+use crate::network::{AdamOptimizer, MlpModel, MlpSettings, TensorValue, ema};
 use crate::policy::{
     Policy,
     uniform::{UniformContinuousPolicy, UniformPolicy},
@@ -190,7 +189,7 @@ where
     }
 }
 
-trait SacAction: ActionType {
+trait SacAction: TensorValue {
     type Actor: Actor<Self>;
     type Policy: Policy<Observation = Array1<f64>, Action = Self>;
 
@@ -211,7 +210,7 @@ trait SacAction: ActionType {
     fn eval_q(
         model: &MlpModel<TrainingBackend>,
         states: Tensor<TrainingBackend, 2>,
-        actions: Self::TensorType,
+        actions: Self::BatchTensor,
     ) -> Tensor<TrainingBackend, 1>;
 
     fn soft_state_values(
@@ -266,7 +265,7 @@ impl SacAction for usize {
     fn eval_q(
         model: &MlpModel<TrainingBackend>,
         states: Tensor<TrainingBackend, 2>,
-        actions: Self::TensorType,
+        actions: Self::BatchTensor,
     ) -> Tensor<TrainingBackend, 1> {
         model
             .forward(states)
@@ -334,7 +333,7 @@ impl SacAction for Array1<f64> {
     fn eval_q(
         model: &MlpModel<TrainingBackend>,
         states: Tensor<TrainingBackend, 2>,
-        actions: Self::TensorType,
+        actions: Self::BatchTensor,
     ) -> Tensor<TrainingBackend, 1> {
         model
             .forward(Tensor::cat(vec![states, actions], 1))

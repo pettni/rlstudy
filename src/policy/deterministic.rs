@@ -1,12 +1,12 @@
 use rand_distr::{Distribution, StandardNormal};
 use std::borrow::Cow;
 
-use burn::tensor::{Tensor, backend::Backend};
+use burn::tensor::backend::Backend;
 use ndarray::Array1;
 
 use crate::{
-    backend::{Device, device},
-    network::MlpModel,
+    backend::Device,
+    network::{MlpModel, state_tensor},
     policy::Policy,
 };
 
@@ -62,10 +62,7 @@ where
         observation: &Self::Observation,
         rng: &mut dyn rand::Rng,
     ) -> Self::Action {
-        let observation = Tensor::<B, 2>::from_data(
-            burn::tensor::TensorData::new(observation.to_vec(), [1, observation.len()]),
-            device(),
-        );
+        let observation = state_tensor::<B>(observation);
 
         let actions = self.pi_network.forward(observation);
 
@@ -90,7 +87,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::InferenceBackend;
+    use crate::backend::{InferenceBackend, device};
     use crate::network::{Activation, OutputTransform};
     use burn::module::Reinitializer;
     use ndarray::array;

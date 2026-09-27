@@ -2,20 +2,17 @@ use crate::algorithms::{ModelFreeSolver, SolveResult, SolveStatus};
 use crate::backend::{TrainingBackend, device};
 use crate::environment::{Environment, Space};
 use crate::network::{
-    AdamOptimizer, MlpModel, MlpSettings,
-    action::ActionType,
+    AdamOptimizer, MlpModel, MlpSettings, TensorValue,
     actor::{Actor, CategoricalActor},
-    gradient_norm,
+    gradient_norm, state_tensor,
 };
 use crate::policy::Policy;
 use crate::reporting::{Reporter, Step};
 use crate::schedule::Schedule;
-use burn::tensor::ElementConversion;
 use burn::{
-    Tensor,
     module::AutodiffModule,
     optim::{AdamConfig, GradientsParams, Optimizer},
-    tensor::{TensorData, backend::Backend},
+    tensor::{ElementConversion, backend::Backend},
 };
 use ndarray::Array1;
 use rand::RngExt;
@@ -150,15 +147,9 @@ impl ModelFreeSolver for ActorCritic {
                 let action = pi.sample_action(&state, rng);
                 let step = env.step(action, rng);
 
-                let st = Tensor::<TrainingBackend, 2>::from_data(
-                    TensorData::new(state.to_vec(), [1, n_s]),
-                    device(),
-                );
-                let at = usize::tensor_data(&[&action]);
-                let stp = Tensor::<TrainingBackend, 2>::from_data(
-                    TensorData::new(step.observation.to_vec(), [1, n_s]),
-                    device(),
-                );
+                let st = state_tensor::<TrainingBackend>(&state);
+                let at = usize::singleton_tensor(&action);
+                let stp = state_tensor::<TrainingBackend>(&step.observation);
 
                 let live = if step.terminated { 0.0 } else { 1.0 };
 

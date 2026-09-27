@@ -2,8 +2,7 @@
 
 use crate::backend::{TrainingBackend, device};
 use crate::environment::{Environment, Rollout};
-use crate::network::action::ActionType;
-use crate::network::actor::Actor;
+use crate::network::{TensorValue, actor::Actor};
 use crate::policy::Policy;
 use burn::{
     Tensor,
@@ -12,11 +11,11 @@ use burn::{
 use ndarray::Array1;
 use std::collections::VecDeque;
 
-pub struct TransitionBufferTensorData<A: ActionType> {
+pub struct TransitionBufferTensorData<A: TensorValue> {
     // [s0, ..., s_{T-1}]
     pub s: Tensor<TrainingBackend, 2>,
     // [a0, ..., a_{T-1}]
-    pub a: A::TensorType,
+    pub a: A::BatchTensor,
     // [log pi(a0|s0), ..., log(a_{T-1} | s_{T-1})}]
     pub log_probs: Tensor<TrainingBackend, 1>,
     // [r1, ..., r_T]
@@ -29,7 +28,7 @@ pub struct TransitionBufferTensorData<A: ActionType> {
     pub truncated: Tensor<TrainingBackend, 1, Bool>,
 }
 
-impl<A: ActionType> TransitionBufferTensorData<A> {
+impl<A: TensorValue> TransitionBufferTensorData<A> {
     fn boundaries(&self) -> Tensor<TrainingBackend, 1, Bool> {
         self.terminated.clone().bool_or(self.truncated.clone())
     }
@@ -289,7 +288,7 @@ impl<A> TransitionBuffer<A> {
         rng: &mut dyn rand::Rng,
     ) -> &Transition<A>
     where
-        A: Clone + ActionType,
+        A: Clone + TensorValue,
         E: Environment<Observation = Array1<f64>, Action = A> + ?Sized,
         P: Actor<A> + ?Sized,
     {
@@ -323,7 +322,7 @@ impl<A> TransitionBuffer<A> {
         rng: &mut dyn rand::Rng,
         max_steps: Option<usize>,
     ) where
-        A: Clone + ActionType,
+        A: Clone + TensorValue,
         E: Environment<Observation = Array1<f64>, Action = A> + ?Sized,
         P: Actor<A> + ?Sized,
     {
@@ -365,7 +364,7 @@ impl<A> TransitionBuffer<A> {
         pi: &P,
         rng: &mut dyn rand::Rng,
     ) where
-        A: Clone + ActionType,
+        A: Clone + TensorValue,
         E: Environment<Observation = Array1<f64>, Action = A> + ?Sized,
         P: Actor<A> + ?Sized,
     {
@@ -382,7 +381,7 @@ impl<A> TransitionBuffer<A> {
     /// Return all data in order
     pub fn tensor_data(&self) -> TransitionBufferTensorData<A>
     where
-        A: ActionType,
+        A: TensorValue,
     {
         self.tensor_data_impl(self.transitions.iter())
     }
@@ -394,7 +393,7 @@ impl<A> TransitionBuffer<A> {
         rng: &mut dyn rand::Rng,
     ) -> TransitionBufferTensorData<A>
     where
-        A: ActionType,
+        A: TensorValue,
     {
         let transitions = rand::seq::index::sample(rng, self.transitions.len(), n)
             .into_iter()
@@ -408,27 +407,26 @@ impl<A> TransitionBuffer<A> {
         transitions: impl ExactSizeIterator<Item = &'a Transition<A>>,
     ) -> TransitionBufferTensorData<A>
     where
-        A: ActionType + 'a,
+        A: TensorValue + 'a,
     {
-        let state_dim = self.transitions.front().expect("buffer is empty").s.len();
         let size = transitions.len();
 
-        let mut states = Vec::with_capacity(size * state_dim);
+        let mut states = Vec::with_capacity(size);
         let mut actions = Vec::with_capacity(size);
         let mut log_probs = Vec::with_capacity(size);
         let mut rewards = Vec::with_capacity(size);
-        let mut next_states = Vec::with_capacity(size * state_dim);
+        let mut next_states = Vec::with_capacity(size);
         let mut terminated = Vec::with_capacity(size);
         let mut truncated = Vec::with_capacity(size);
 
         for transition in transitions {
-            states.extend(transition.s.iter().copied());
+            states.push(&transition.s);
             actions.push(&transition.a);
             if let Some(logprob) = transition.log_pi_a_s {
                 log_probs.push(logprob);
             }
             rewards.push(transition.r);
-            next_states.extend(transition.sp.iter().copied());
+            next_states.push(&transition.sp);
             terminated.push(transition.terminated);
             truncated.push(transition.truncated);
         }
@@ -436,11 +434,11 @@ impl<A> TransitionBuffer<A> {
         let num_log_probs = log_probs.len();
 
         TransitionBufferTensorData::<A> {
-            s: Tensor::from_data(TensorData::new(states, [size, state_dim]), device()),
-            a: A::tensor_data(&actions),
+            s: Array1::batch_tensor(&states),
+            a: A::batch_tensor(&actions),
             log_probs: Tensor::from_data(TensorData::new(log_probs, [num_log_probs]), device()),
             r: Tensor::from_data(TensorData::new(rewards, [size]), device()),
-            sp: Tensor::from_data(TensorData::new(next_states, [size, state_dim]), device()),
+            sp: Array1::batch_tensor(&next_states),
             truncated: Tensor::from_data(TensorData::new(truncated, [size]), device()),
             terminated: Tensor::from_data(TensorData::new(terminated, [size]), device()),
         }

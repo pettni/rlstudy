@@ -1,9 +1,9 @@
-pub mod action;
 pub mod actor;
 pub mod ema;
 pub mod loss;
 mod mlp;
 mod settings;
+mod tensor_value;
 use crate::backend::{InferenceBackend, TrainingBackend};
 use burn::{
     module::{Module, ModuleVisitor, Param},
@@ -12,6 +12,7 @@ use burn::{
 };
 pub use mlp::{Activation, MlpModel, OutputTransform};
 pub use settings::{AdamOptimizer, MlpSettings};
+pub use tensor_value::{TensorValue, state_tensor};
 
 pub fn gradient_norm<M>(module: &M, gradients: &GradientsParams) -> f64
 where

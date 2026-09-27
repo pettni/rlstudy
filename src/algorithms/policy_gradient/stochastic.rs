@@ -2,9 +2,8 @@ use crate::algorithms::{ModelFreeSolver, SolveResult, SolveStatus};
 use crate::algorithms::{ppo::PpoConfig, vpg::VanillaPolicyGradientConfig};
 use crate::backend::{TrainingBackend, device};
 use crate::environment::{Environment, Rollout, Space};
-use crate::network::action::ActionType;
 use crate::network::actor::{Actor, CategoricalActor, GaussianActor};
-use crate::network::{AdamOptimizer, MlpModel, MlpSettings, gradient_norm};
+use crate::network::{AdamOptimizer, MlpModel, MlpSettings, TensorValue, gradient_norm};
 use crate::reporting::{MetricAverages, Reporter, Step};
 use crate::schedule::Schedule;
 use crate::transition_buffer::TransitionBuffer;
@@ -59,7 +58,7 @@ pub(in crate::algorithms) struct PolicyGradientConfig {
     pub(in crate::algorithms) value_updates_per_epoch: usize,
 }
 
-trait PolicyGradientAction: ActionType {
+trait PolicyGradientAction: TensorValue {
     type Actor: Actor<Self>;
 
     fn create_actor(

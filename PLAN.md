@@ -30,7 +30,7 @@ Develop a solid working understanding of the RL options for improving pretrained
 
 ## Current status
 
-As of 2026-09-25:
+As of 2026-09-27:
 
 - [x] Started reading Zhao end-to-end.
 - [x] Ordered Zhao and Sutton & Barto.
@@ -55,8 +55,13 @@ As of 2026-09-25:
 - [x] Standardized DQN, REINFORCE, and VPG transition storage around a shared transition buffer.
 - [x] Wrote an algorithm taxonomy covering policy relation, targets, policy signals, data usage, and bias–variance tradeoffs.
 - [x] Implemented PPO, DDPG, and TD3 with bounded continuous actions, replay-buffer warmup, target networks, and evaluation reporting.
+- [x] Implemented SAC and trained a stable, visually strong HalfCheetah policy without NaNs.
 
-The Zhao implementation checkpoints, including neural n-step Sarsa, are complete. VPG and PPO with GAE solve CartPole, and DDPG and TD3 learn significantly on HalfCheetah. Online one-step actor–critic remains unreliable on CartPole. Next, work through SAC.
+The Zhao implementation checkpoints, including neural n-step Sarsa, and the
+Spinning Up deep-RL phase are complete. VPG and PPO with GAE solve CartPole,
+and DDPG, TD3, and SAC learn significant locomotion policies on HalfCheetah.
+Online one-step actor–critic remains unreliable on CartPole. Next, read AWR and
+begin batch policy improvement from execution data.
 
 ## Project
 
@@ -134,7 +139,7 @@ Before starting Spinning Up, read these short Sutton and Barto sections:
 - [x] §6.7: maximization bias and Double Learning.
 - [x] §§11.1–11.3: off-policy divergence and the deadly triad.
 
-## Phase 2: Transition to deep RL with Spinning Up
+## Phase 2: Transition to deep RL with Spinning Up — complete
 
 Start this phase after Zhao Chapter 10. Use [OpenAI Spinning Up](https://spinningup.openai.com/en/latest/) as the bridge from the book's derivations to practical deep RL, translating the relevant implementations into Rust/Burn.
 
@@ -143,36 +148,71 @@ Start this phase after Zhao Chapter 10. Use [OpenAI Spinning Up](https://spinnin
 - [x] Work through the VPG explanation and implement it in Rust/Burn.
 - [x] Work through the PPO explanation and implement PPO with generalized advantage estimation on CartPole.
 - [x] Work through the TD3 explanation and implement it in Rust/Burn.
-- [ ] Work through the SAC explanation.
+- [x] Work through the SAC explanation.
 - [x] Compare the Zhao Rust/Burn REINFORCE and actor–critic implementations with Spinning Up's VPG formulation.
 - [x] Implement an initial DDPG solver with replay data and target networks.
 - [x] Try DDPG and TD3 on HalfCheetah.
-- [ ] Implement a squashed Gaussian actor, replay buffer, twin critics, target networks, and entropy-temperature update for SAC in Rust/Burn.
-- [ ] Train SAC on a simple Gymnasium continuous-control environment through a small PyO3 bridge.
-- [ ] Compare learning curves with a readable reference implementation such as CleanRL or Stable-Baselines3.
-- [ ] Run at least three seeds and inspect failed runs.
-- [ ] Read the TRPO derivation only after the rest of the curriculum if natural gradients remain interesting; no implementation is required.
+- [x] Implement SAC in Rust/Burn with a squashed Gaussian actor, replay buffer, twin critics, target networks, and fixed entropy temperature.
+- [x] Train SAC on HalfCheetah through the PyO3 Gymnasium bridge and inspect evaluation videos.
+- [x] Complete the phase with working on-policy, deterministic off-policy, and maximum-entropy off-policy implementations.
+
+Optional follow-up, not required for completion:
+
+- Add automatic SAC entropy-temperature tuning.
+- Compare learning curves with a readable reference implementation such as CleanRL or Stable-Baselines3.
+- Read the TRPO derivation if natural gradients remain interesting; no implementation is required.
 
 Checkpoint: explain policy-gradient estimation, generalized advantage estimation, PPO clipping, entropy, twin critics, target updates, action scaling, the reparameterization trick, replay data, and the main tradeoffs between PPO and SAC.
 
-## Phase 3: Map the execution-data options
+## Phase 3: Improve a BC policy from a fixed execution dataset
 
-Connect actor–critic methods to the main ways execution data is used after behavior cloning.
+Treat each policy-improvement stage as offline: collect a batch with a deployed
+policy, freeze it, train without further environment interaction, then evaluate
+the resulting policy. Repeating this cycle is iterated offline RL.
 
-- [ ] Study dataset-policy mismatch, extrapolation error, behavior regularization, and why repeated optimization on fixed data differs from online SAC.
-- [ ] Derive KL-regularized policy improvement and its connection to advantage-weighted regression (AWR).
-- [ ] Implement AWR on a fixed dataset containing both competent and failed executions.
-- [ ] Study IQL as an offline-RL route that avoids evaluating unseen actions during value learning.
-- [ ] Study RLPD as an off-policy route that mixes prior demonstrations with new online experience.
-- [ ] Study direct PPO or SAC fine-tuning and identify when its data requirements are acceptable.
-- [ ] Study value- or advantage-conditioned policy extraction, using RECAP as one recent example.
-- [ ] Study residual RL as a way to preserve a competent base policy while learning corrections.
-- [ ] Represent interventions explicitly and understand their connection to human-gated DAgger.
-- [ ] Build a decision table covering data access, exploration, conservatism, policy architecture, and expected failure modes for each route.
+### Papers
 
-Optional case study after PPO: examine [GRPO](https://arxiv.org/abs/2402.03300) for grouped simulator rollouts, using [TGRPO](https://arxiv.org/abs/2506.08440) as a robotics example. Compare its rollout cost and group-relative advantage signal with PPO before considering it for the project.
+Read these in order:
 
-Checkpoint: given a pretrained policy, dataset, simulator access, and correction budget, choose a plausible improvement method and explain the tradeoffs.
+1. [Advantage-Weighted Regression: Simple and Scalable Off-Policy Reinforcement Learning](https://arxiv.org/abs/1910.00177)
+   — understand policy improvement as advantage-weighted behavior cloning.
+2. [Offline Reinforcement Learning with Implicit Q-Learning](https://arxiv.org/abs/2110.06169)
+   — learn values without evaluating unseen actions, then extract a policy with
+   advantage-weighted regression.
+3. [π*0.6: a Vision-Language-Action Model that Learns from Experience](https://arxiv.org/abs/2511.14759)
+   — study RECAP as a concrete system using demonstrations, autonomous
+   successes and failures, corrections, value learning, and policy extraction.
+
+Optional contrast:
+
+- [Conservative Q-Learning for Offline Reinforcement Learning](https://arxiv.org/abs/2006.04779)
+  — compare IQL's in-distribution value learning with explicit conservative
+  penalties on out-of-distribution actions.
+- [Residual Reinforcement Learning for Robot Control](https://arxiv.org/abs/1812.03201)
+  — learn bounded corrections around a competent base controller instead of
+  replacing it.
+
+### Implementation and experiment
+
+- [ ] Train a behavior-cloned baseline from scripted demonstrations.
+- [ ] Collect and freeze an execution dataset containing complete successes,
+  failures, and optional corrective interventions.
+- [ ] Preserve each transition's trajectory, outcome, behavior-policy
+  iteration, and intervention identity.
+- [ ] Implement advantage-weighted policy fitting from recorded actions.
+- [ ] Implement IQL value learning and policy extraction.
+- [ ] Compare demonstration-only BC, BC on all aggregated data,
+  success-filtered BC, advantage-weighted regression, and IQL.
+- [ ] Run each method over at least three seeds using the same training data and
+  evaluation budget.
+- [ ] Ablate either failure trajectories or corrective interventions.
+- [ ] Map the simplified experiment onto the data and training stages used by
+  RECAP.
+
+Checkpoint: explain why naive BC on execution data can reproduce failures, how
+AWR and IQL assign credit to recorded actions, how IQL limits
+out-of-distribution action evaluation, and what corrections contribute beyond
+autonomous successes and failures.
 
 ## Phase 4: Compare two improvement routes
 
@@ -265,3 +305,5 @@ Use these in the roles below, not as a parallel reading backlog.
 | 2026-09-23 | Standardized transition storage and documented the algorithm taxonomy | DQN, REINFORCE, and VPG now reuse the transition buffer; `TAXONOMY.md` records the main dimensions distinguishing the implemented algorithms | Implement PPO on a small continuous-control environment |
 | 2026-09-25 | Implemented PPO and an initial DDPG solver in Rust/Burn | PPO with GAE runs successfully on CartPole; DDPG supports bounded continuous actions, replay-buffer warmup, target-network updates, configurable collection and optimization steps, and evaluation reporting | Try DDPG on HalfCheetah |
 | 2026-09-25 | Implemented TD3 and ran deterministic policy gradients on HalfCheetah | DDPG reached about 9,570 and TD3 about 6,975 mean evaluation return with seed 42; both learned significant locomotion policies | Work through SAC |
+| 2026-09-27 | Implemented SAC and trained it on HalfCheetah | The run remained numerically stable without NaNs, and evaluation videos showed a strong locomotion policy | Compare SAC across seeds and against a reference implementation |
+| 2026-09-27 | Closed the Spinning Up deep-RL phase | Implemented and exercised VPG, PPO, DDPG, TD3, and SAC across discrete and continuous-control benchmarks | Read AWR and begin batch policy improvement from execution data |

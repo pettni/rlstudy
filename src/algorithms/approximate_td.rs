@@ -3,7 +3,9 @@ use std::collections::VecDeque;
 use crate::algorithms::{ModelFreeSolver, SolveResult, SolveStatus};
 use crate::backend::{TrainingBackend, device};
 use crate::environment::{Environment, Space};
-use crate::network::{AdamOptimizer, MlpModel, MlpSettings, gradient_norm};
+use crate::network::{
+    AdamOptimizer, MlpModel, MlpSettings, TensorValue, gradient_norm, state_tensor,
+};
 use crate::policy::{
     Policy,
     dq::{DeepQPolicy, DeepQPolicyMode},
@@ -14,7 +16,7 @@ use burn::{
     Tensor,
     module::AutodiffModule,
     optim::{AdamConfig, GradientsParams, Optimizer},
-    tensor::{Int, TensorData, backend::Backend},
+    tensor::backend::Backend,
 };
 use ndarray::Array1;
 use rand::RngExt;
@@ -163,14 +165,8 @@ impl ModelFreeSolver for ApproximateTD {
 
                 if pending.len() >= self.config.n || (terminated && !pending.is_empty()) {
                     let (old_state, old_action, _) = pending.front().unwrap();
-                    let t_s_old = Tensor::<TrainingBackend, 2>::from_data(
-                        TensorData::new(old_state.to_vec(), [1, n_s]),
-                        device(),
-                    );
-                    let t_a_old = Tensor::<TrainingBackend, 2, Int>::from_data(
-                        TensorData::new(vec![*old_action as i64], [1, 1]),
-                        device(),
-                    );
+                    let t_s_old = state_tensor::<TrainingBackend>(old_state);
+                    let t_a_old = usize::singleton_tensor(old_action).unsqueeze_dim::<2>(1);
 
                     // g = n-step return + bootstrap tail
                     let g: f64 = pending
@@ -181,14 +177,8 @@ impl ModelFreeSolver for ApproximateTD {
 
                     // bootstrap tail
                     let bootstrap_tail = if let Some((next_state, next_action)) = &bootstrap {
-                        let t_s_new = Tensor::<TrainingBackend, 2>::from_data(
-                            TensorData::new(next_state.to_vec(), [1, n_s]),
-                            device(),
-                        );
-                        let t_a_new = Tensor::<TrainingBackend, 2, Int>::from_data(
-                            TensorData::new(vec![*next_action as i64], [1, 1]),
-                            device(),
-                        );
+                        let t_s_new = state_tensor::<TrainingBackend>(next_state);
+                        let t_a_new = usize::singleton_tensor(next_action).unsqueeze_dim::<2>(1);
                         let q_bootstrap = q.forward(t_s_new).gather(1, t_a_new);
 
                         self.config.gamma.powi(pending.len() as i32) * q_bootstrap

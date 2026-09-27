@@ -1,15 +1,13 @@
 use burn::{
     module::Module,
-    tensor::{
-        ElementConversion, Int, Tensor, TensorData, activation::log_softmax, backend::Backend,
-    },
+    tensor::{ElementConversion, Int, Tensor, activation::log_softmax, backend::Backend},
 };
 use ndarray::Array1;
 
 use super::Actor;
 use crate::{
-    backend::{InferenceBackend, TrainingBackend, device},
-    network::{Activation, MlpModel},
+    backend::{InferenceBackend, TrainingBackend},
+    network::{Activation, MlpModel, TensorValue, state_tensor},
     policy::Policy,
 };
 
@@ -53,7 +51,7 @@ impl Actor<usize> for CategoricalActor<TrainingBackend> {
         &self,
         states: Tensor<TrainingBackend, 2>,
     ) -> (
-        <usize as crate::network::action::ActionType>::TensorType,
+        <usize as crate::network::TensorValue>::BatchTensor,
         Tensor<TrainingBackend, 1>,
     ) {
         let log_probs = log_softmax(self.forward(states), 1);
@@ -78,14 +76,9 @@ impl Policy for CategoricalActor<TrainingBackend> {
     type Action = usize;
 
     fn sample_action(&self, state: &Array1<f64>, _rng: &mut dyn rand::Rng) -> Self::Action {
-        let state = Tensor::<TrainingBackend, 2>::from_data(
-            TensorData::new(state.to_vec(), [1, state.len()]),
-            device(),
-        );
-
+        let state = state_tensor::<TrainingBackend>(state);
         let (action, _) = self.sample_actions(state);
-
-        action.into_scalar().elem::<i64>() as usize
+        Self::Action::from_singleton_tensor(action)
     }
 }
 
@@ -94,10 +87,7 @@ impl Policy for CategoricalActor<InferenceBackend> {
     type Action = usize;
 
     fn sample_action(&self, state: &Array1<f64>, _rng: &mut dyn rand::Rng) -> Self::Action {
-        let state = Tensor::<InferenceBackend, 2>::from_data(
-            TensorData::new(state.to_vec(), [1, state.len()]),
-            device(),
-        );
+        let state = state_tensor::<InferenceBackend>(state);
 
         let action = self.forward(state).argmax(1).squeeze_dim::<1>(1);
 

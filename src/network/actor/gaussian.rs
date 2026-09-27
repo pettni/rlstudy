@@ -1,12 +1,12 @@
 use burn::{
     module::{Module, Param},
-    tensor::{Tensor, TensorData, backend::Backend},
+    tensor::{Tensor, backend::Backend},
 };
 use ndarray::Array1;
 
 use super::{Actor, LOG_TWO_PI};
-use crate::backend::{InferenceBackend, TrainingBackend, device};
-use crate::network::{Activation, MlpModel};
+use crate::backend::{InferenceBackend, TrainingBackend};
+use crate::network::{Activation, MlpModel, TensorValue, state_tensor};
 use crate::policy::Policy;
 
 #[derive(Module, Debug)]
@@ -84,12 +84,9 @@ impl Policy for GaussianActor<TrainingBackend> {
     type Action = Array1<f64>;
 
     fn sample_action(&self, state: &Array1<f64>, _rng: &mut dyn rand::Rng) -> Self::Action {
-        let state = Tensor::<TrainingBackend, 2>::from_data(
-            TensorData::new(state.to_vec(), [1, state.len()]),
-            device(),
-        );
+        let state = state_tensor::<TrainingBackend>(state);
         let (action, _) = self.sample_actions(state);
-        Array1::from_iter(action.into_data().iter())
+        Self::Action::from_singleton_tensor(action)
     }
 }
 
@@ -98,10 +95,7 @@ impl Policy for GaussianActor<InferenceBackend> {
     type Action = Array1<f64>;
 
     fn sample_action(&self, state: &Array1<f64>, _rng: &mut dyn rand::Rng) -> Self::Action {
-        let state = Tensor::<InferenceBackend, 2>::from_data(
-            TensorData::new(state.to_vec(), [1, state.len()]),
-            device(),
-        );
+        let state = state_tensor::<InferenceBackend>(state);
         let (mu, _) = self.parameters(state);
         Array1::from_iter(mu.into_data().iter())
     }
