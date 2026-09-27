@@ -15,6 +15,8 @@ pub use categorical::CategoricalActor;
 pub use gaussian::GaussianActor;
 pub use squashed_gaussian::SquashedGaussianActor;
 
+pub(super) const LOG_TWO_PI: f64 = 1.8378770664093453;
+
 pub trait Actor<A: ActionType>:
     AutodiffModule<TrainingBackend, InnerModule = Self::InferencePolicy>
     + Policy<Observation = Array1<f64>, Action = A>
@@ -35,7 +37,6 @@ pub trait Actor<A: ActionType>:
     fn sample_actions(
         &self,
         states: Tensor<TrainingBackend, 2>,
-        rng: &mut dyn rand::Rng,
     ) -> (A::TensorType, Tensor<TrainingBackend, 1>);
 
     fn log_probs(

@@ -6,7 +6,7 @@ use self::systems::{SelectedSystem, build_system};
 use clap::{Parser, Subcommand};
 use ndarray::{Array1, Array2};
 use rand::{SeedableRng, rngs::StdRng};
-use rlstudy::algorithms::{ModelBasedSolver, ModelFreeSolver, SolveResult};
+use rlstudy::algorithms::{ModelBasedSolver, ModelFreeSolver, SoftActorCritic, SolveResult};
 use rlstudy::environment::{Environment, FeatureEnvironment, TabularEnvironment};
 use rlstudy::environments::{
     ContinuousGymEnvironment, DiscreteGymEnvironment, GymEnvironment, GymOptions,
@@ -261,6 +261,50 @@ fn run_solver(
             )?;
             Ok((SelectedResult::Continuous(result, history), stats))
         }
+        SelectedSolver::Sac(config) => match system {
+            SelectedSystem::Model(model) => {
+                let solver = SoftActorCritic::<usize>::new(config)?;
+                let mut environment = FeatureEnvironment::new(model)?;
+                let mut evaluation_environment = FeatureEnvironment::new(model)?;
+                let (result, history, stats) = run_model_free(
+                    &solver,
+                    &mut environment,
+                    &mut evaluation_environment,
+                    rng,
+                    reporting,
+                    evaluation_seed,
+                )?;
+                Ok((SelectedResult::Neural(result, history), stats))
+            }
+            SelectedSystem::DiscreteGym(environment) => {
+                let solver = SoftActorCritic::<usize>::new(config)?;
+                let mut evaluation_environment =
+                    discrete_gym(gym_id.expect("Gym ID is present"), gym_options)?;
+                let (result, history, stats) = run_model_free(
+                    &solver,
+                    environment,
+                    &mut evaluation_environment,
+                    rng,
+                    reporting,
+                    evaluation_seed,
+                )?;
+                Ok((SelectedResult::Neural(result, history), stats))
+            }
+            SelectedSystem::ContinuousGym(environment) => {
+                let solver = SoftActorCritic::<Array1<f64>>::new(config)?;
+                let mut evaluation_environment =
+                    continuous_gym(gym_id.expect("Gym ID is present"), gym_options)?;
+                let (result, history, stats) = run_model_free(
+                    &solver,
+                    environment,
+                    &mut evaluation_environment,
+                    rng,
+                    reporting,
+                    evaluation_seed,
+                )?;
+                Ok((SelectedResult::Continuous(result, history), stats))
+            }
+        },
         SelectedSolver::Reinforce(solver) => {
             let (result, history, stats) = match system {
                 SelectedSystem::Model(model) => {

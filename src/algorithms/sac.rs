@@ -17,8 +17,11 @@ use burn::{
 };
 use ndarray::Array1;
 use rand::RngExt;
+use serde::{Deserialize, Serialize};
 use std::marker::PhantomData;
 
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct SoftActorCriticConfig {
     pub gamma: f64,
     pub alpha: f64,
@@ -67,7 +70,7 @@ impl<Action> SoftActorCritic<Action> {
 
 impl<Action> ModelFreeSolver for SoftActorCritic<Action>
 where
-    Action: SacActorCritic,
+    Action: SacAction,
     <Action::Actor as Actor<Action>>::InferencePolicy: 'static,
 {
     type Observation = Array1<f64>;
@@ -89,8 +92,13 @@ where
         let mut pi = Action::create_actor(&self.config.pi_network, n_s, env.action_space())?;
         let mut pi_optimizer: AdamOptimizer<Action::Actor> = AdamConfig::new().init();
 
-        let mut q1 = Action::create_critic(&self.config.q_network, n_s, env.action_space())?;
-        let mut q2 = Action::create_critic(&self.config.q_network, n_s, env.action_space())?;
+        let mut q1_pred = Action::create_critic(&self.config.q_network, n_s, env.action_space())?;
+        let mut q1_target = q1_pred.clone();
+        let mut q2_pred = Action::create_critic(&self.config.q_network, n_s, env.action_space())?;
+        let mut q2_target = q2_pred.clone();
+
+        let mut q1_optimizer: AdamOptimizer<MlpModel<TrainingBackend>> = AdamConfig::new().init();
+        let mut q2_optimizer: AdamOptimizer<MlpModel<TrainingBackend>> = AdamConfig::new().init();
 
         let mut buffer = TransitionBuffer::<Self::Action>::new(Some(self.config.replay_capacity));
 
@@ -118,11 +126,10 @@ where
 
                 let (soft_next_values, _) = Action::soft_state_values(
                     &pi,
-                    &q1.target,
-                    &q2.target,
+                    &q1_target,
+                    &q2_target,
                     batch.sp.clone(),
                     self.config.alpha,
-                    rng,
                 );
                 let td_target = batch.r
                     + self.config.gamma * batch.terminated.bool_not().float() * soft_next_values;
@@ -130,27 +137,26 @@ where
 
                 // critic updates
 
-                let q1val = Action::eval_q(&q1.pred, batch.s.clone(), batch.a.clone());
+                let q1val = Action::eval_q(&q1_pred, batch.s.clone(), batch.a.clone());
                 let q1_loss = (td_target.clone() - q1val).square().mean();
                 update_metrics.record("q1/loss", q1_loss.clone().into_scalar().elem::<f64>());
-                let q1_grad = GradientsParams::from_grads(q1_loss.backward(), &q1.pred);
-                q1.pred = q1.optimizer.step(q_lr, q1.pred, q1_grad);
+                let q1_grad = GradientsParams::from_grads(q1_loss.backward(), &q1_pred);
+                q1_pred = q1_optimizer.step(q_lr, q1_pred, q1_grad);
 
-                let q2val = Action::eval_q(&q2.pred, batch.s.clone(), batch.a.clone());
+                let q2val = Action::eval_q(&q2_pred, batch.s.clone(), batch.a.clone());
                 let q2_loss = (td_target.clone() - q2val).square().mean();
                 update_metrics.record("q2/loss", q2_loss.clone().into_scalar().elem::<f64>());
-                let q2_grad = GradientsParams::from_grads(q2_loss.backward(), &q2.pred);
-                q2.pred = q2.optimizer.step(q_lr, q2.pred, q2_grad);
+                let q2_grad = GradientsParams::from_grads(q2_loss.backward(), &q2_pred);
+                q2_pred = q2_optimizer.step(q_lr, q2_pred, q2_grad);
 
                 // actor update
 
                 let (soft_values, entropy) = Action::soft_state_values(
                     &pi,
-                    &q1.pred,
-                    &q2.pred,
+                    &q1_pred,
+                    &q2_pred,
                     batch.s.clone(),
                     self.config.alpha,
-                    rng,
                 );
                 update_metrics.record("pi/entropy", entropy.mean().into_scalar().elem::<f64>());
 
@@ -161,8 +167,8 @@ where
                 pi = pi_optimizer.step(pi_lr, pi, pi_grad);
 
                 // ema on target networks
-                q1.target = ema::update(q1.target, &q1.pred, self.config.ema_rate);
-                q2.target = ema::update(q2.target, &q2.pred, self.config.ema_rate);
+                q1_target = ema::update(q1_target, &q1_pred, self.config.ema_rate);
+                q2_target = ema::update(q2_target, &q2_pred, self.config.ema_rate);
             }
 
             let mut metrics = vec![
@@ -184,7 +190,7 @@ where
     }
 }
 
-trait SacActorCritic: ActionType {
+trait SacAction: ActionType {
     type Actor: Actor<Self>;
     type Policy: Policy<Observation = Array1<f64>, Action = Self>;
 
@@ -198,7 +204,7 @@ trait SacActorCritic: ActionType {
         settings: &MlpSettings,
         state_dim: usize,
         action_space: Space,
-    ) -> Result<Qdata, String>;
+    ) -> Result<MlpModel<TrainingBackend>, String>;
 
     fn create_uniform_policy(action_space: Space) -> Result<Self::Policy, String>;
 
@@ -214,11 +220,10 @@ trait SacActorCritic: ActionType {
         q2: &MlpModel<TrainingBackend>,
         states: Tensor<TrainingBackend, 2>,
         alpha: f64,
-        rng: &mut dyn rand::Rng,
     ) -> (Tensor<TrainingBackend, 1>, Tensor<TrainingBackend, 1>);
 }
 
-impl SacActorCritic for usize {
+impl SacAction for usize {
     type Actor = CategoricalActor<TrainingBackend>;
     type Policy = UniformPolicy;
 
@@ -244,11 +249,11 @@ impl SacActorCritic for usize {
         settings: &MlpSettings,
         state_dim: usize,
         action_space: Space,
-    ) -> Result<Qdata, String> {
+    ) -> Result<MlpModel<TrainingBackend>, String> {
         let Space::Discrete { size: n_a } = action_space else {
             return Err("Sac requires a discrete action space".into());
         };
-        Ok(Qdata::new(settings.init(state_dim, n_a)))
+        Ok(settings.init(state_dim, n_a))
     }
 
     fn create_uniform_policy(action_space: Space) -> Result<Self::Policy, String> {
@@ -275,14 +280,12 @@ impl SacActorCritic for usize {
         q2: &MlpModel<TrainingBackend>,
         states: Tensor<TrainingBackend, 2>,
         alpha: f64,
-        _rng: &mut dyn rand::Rng,
     ) -> (Tensor<TrainingBackend, 1>, Tensor<TrainingBackend, 1>) {
         let log_probs = log_softmax(pi.forward(states.clone()), 1);
         let probabilities = log_probs.clone().exp();
-        let q_values = q1
-            .forward(states.clone())
-            .min_pair(q2.forward(states))
-            .detach();
+        let q_values = q1.forward(states.clone()).min_pair(q2.forward(states));
+
+        let q_values = q_values.detach(); // pi gradients flow through probabilities
 
         let expected_q = (probabilities.clone() * q_values).sum_dim(1).squeeze_dim(1);
         let entropy = -(probabilities * log_probs).sum_dim(1).squeeze_dim(1);
@@ -292,7 +295,7 @@ impl SacActorCritic for usize {
     }
 }
 
-impl SacActorCritic for Array1<f64> {
+impl SacAction for Array1<f64> {
     type Actor = SquashedGaussianActor<TrainingBackend>;
     type Policy = UniformContinuousPolicy;
 
@@ -314,17 +317,17 @@ impl SacActorCritic for Array1<f64> {
         settings: &MlpSettings,
         state_dim: usize,
         action_space: Space,
-    ) -> Result<Qdata, String> {
+    ) -> Result<MlpModel<TrainingBackend>, String> {
         let action_dim = action_space
             .continuous_dim()
             .ok_or("Sac requires a continuous action space")?;
-        Ok(Qdata::new(settings.init(state_dim + action_dim, 1)))
+        Ok(settings.init(state_dim + action_dim, 1))
     }
 
     fn create_uniform_policy(action_space: Space) -> Result<Self::Policy, String> {
         let (action_low, action_high) = action_space
             .into_continuous_bounds()
-            .ok_or("DeterministicPolicyGradient requires a continuous action space")?;
+            .ok_or("SoftActorCritic requires a continuous action space")?;
         Ok(UniformContinuousPolicy::new(action_low, action_high))
     }
 
@@ -344,9 +347,8 @@ impl SacActorCritic for Array1<f64> {
         q2: &MlpModel<TrainingBackend>,
         states: Tensor<TrainingBackend, 2>,
         alpha: f64,
-        rng: &mut dyn rand::Rng,
     ) -> (Tensor<TrainingBackend, 1>, Tensor<TrainingBackend, 1>) {
-        let (actions, log_probs) = pi.sample_actions(states.clone(), rng);
+        let (actions, log_probs) = pi.sample_actions(states.clone());
         let q_values = Self::eval_q(q1, states.clone(), actions.clone()).min_pair(Self::eval_q(
             q2,
             states.clone(),
@@ -356,22 +358,5 @@ impl SacActorCritic for Array1<f64> {
         let soft_values = q_values + entropy.clone() * alpha;
 
         (soft_values, entropy)
-    }
-}
-
-struct Qdata {
-    pred: MlpModel<TrainingBackend>,
-    target: MlpModel<TrainingBackend>,
-
-    optimizer: AdamOptimizer<MlpModel<TrainingBackend>>,
-}
-
-impl Qdata {
-    fn new(network: MlpModel<TrainingBackend>) -> Self {
-        Self {
-            pred: network.clone(),
-            target: network,
-            optimizer: AdamConfig::new().init(),
-        }
     }
 }

@@ -4,8 +4,8 @@ use burn::{
 };
 use ndarray::Array1;
 
-use super::Actor;
-use crate::backend::{Device, InferenceBackend, TrainingBackend, device};
+use super::{Actor, LOG_TWO_PI};
+use crate::backend::{InferenceBackend, TrainingBackend, device};
 use crate::network::{Activation, MlpModel};
 use crate::policy::Policy;
 
@@ -29,7 +29,7 @@ impl<B: Backend> GaussianActor<B> {
         }
     }
 
-    pub fn forward(&self, states: Tensor<B, 2>) -> Tensor<B, 3> {
+    fn parameters(&self, states: Tensor<B, 2>) -> (Tensor<B, 2>, Tensor<B, 2>) {
         let mu = self.mu_mlp.forward(states);
         let [batch_size, action_dim] = mu.dims();
         let log_std = self
@@ -37,28 +37,7 @@ impl<B: Backend> GaussianActor<B> {
             .val()
             .unsqueeze_dim::<2>(0)
             .expand([batch_size, action_dim]);
-
-        Tensor::stack(vec![mu, log_std], 2)
-    }
-
-    fn parameters(&self, states: Tensor<B, 2>) -> (Tensor<B, 2>, Tensor<B, 2>) {
-        let parameters = self.forward(states); // (B, N_a, 2)
-        let b = parameters.shape()[0];
-        let n_a = parameters.shape()[1];
-        let mu = parameters
-            .clone()
-            .slice([0..b, 0..n_a, 0..1])
-            .squeeze_dim::<2>(2);
-        let log_std = parameters.slice([0..b, 0..n_a, 1..2]).squeeze_dim::<2>(2);
-
         (mu, log_std)
-    }
-}
-
-impl<B: Backend<Device = Device>> GaussianActor<B> {
-    fn deterministic_actions_impl(&self, observations: Tensor<B, 2>) -> Tensor<B, 2> {
-        let (mu, _) = self.parameters(observations);
-        mu
     }
 }
 
@@ -72,10 +51,9 @@ impl Actor<Array1<f64>> for GaussianActor<TrainingBackend> {
     ) -> Tensor<TrainingBackend, 1> {
         let (mu, log_std) = self.parameters(states);
         let normalized = (actions.clone() - mu) / log_std.clone().exp();
-        let log_two_pi = (2.0 * std::f64::consts::PI).ln();
 
         let log_probs: Tensor<TrainingBackend, 2> =
-            -0.5 * (normalized.square() + log_two_pi) - log_std;
+            -0.5 * (normalized.square() + LOG_TWO_PI) - log_std;
 
         log_probs.sum_dim(1).squeeze_dim(1)
     }
@@ -83,22 +61,19 @@ impl Actor<Array1<f64>> for GaussianActor<TrainingBackend> {
     fn sample_actions(
         &self,
         observations: Tensor<TrainingBackend, 2>,
-        _rng: &mut dyn rand::Rng,
     ) -> (Tensor<TrainingBackend, 2>, Tensor<TrainingBackend, 1>) {
         let (mu, log_std) = self.parameters(observations);
         let noise = mu.random_like(burn::tensor::Distribution::Normal(0., 1.));
         let actions = mu + noise.clone() * log_std.clone().exp();
-        let log_two_pi = (2.0 * std::f64::consts::PI).ln();
-        let log_probs: Tensor<TrainingBackend, 2> = -0.5 * (noise.square() + log_two_pi) - log_std;
+        let log_probs: Tensor<TrainingBackend, 2> = -0.5 * (noise.square() + LOG_TWO_PI) - log_std;
 
         (actions, log_probs.sum_dim(1).squeeze_dim(1))
     }
 
     fn entropy(&self, states: Tensor<TrainingBackend, 2>) -> Tensor<TrainingBackend, 1> {
         let (_, log_std) = self.parameters(states);
-        let log_two_pi = (2.0 * std::f64::consts::PI).ln();
 
-        (log_std + 0.5 * (1.0 + log_two_pi))
+        (log_std + 0.5 * (1.0 + LOG_TWO_PI))
             .sum_dim(1)
             .squeeze_dim(1)
     }
@@ -108,12 +83,12 @@ impl Policy for GaussianActor<TrainingBackend> {
     type Observation = Array1<f64>;
     type Action = Array1<f64>;
 
-    fn sample_action(&self, state: &Array1<f64>, rng: &mut dyn rand::Rng) -> Self::Action {
+    fn sample_action(&self, state: &Array1<f64>, _rng: &mut dyn rand::Rng) -> Self::Action {
         let state = Tensor::<TrainingBackend, 2>::from_data(
             TensorData::new(state.to_vec(), [1, state.len()]),
             device(),
         );
-        let (action, _) = self.sample_actions(state, rng);
+        let (action, _) = self.sample_actions(state);
         Array1::from_iter(action.into_data().iter())
     }
 }
@@ -127,29 +102,7 @@ impl Policy for GaussianActor<InferenceBackend> {
             TensorData::new(state.to_vec(), [1, state.len()]),
             device(),
         );
-        let action = self.deterministic_actions_impl(state);
-        Array1::from_iter(action.into_data().iter())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::backend::InferenceBackend;
-
-    #[test]
-    fn returns_mean_and_log_standard_deviation_per_action() {
-        let actor = GaussianActor::<InferenceBackend>::new(3, &[4], 2, Activation::Tanh, device());
-
-        let parameters = actor.forward(Tensor::zeros([5, 3], device()));
-
-        assert_eq!(parameters.dims(), [5, 2, 2]);
-        assert!(
-            parameters
-                .slice([0..5, 0..2, 1..2])
-                .into_data()
-                .iter::<f64>()
-                .all(|value| value == -0.5)
-        );
+        let (mu, _) = self.parameters(state);
+        Array1::from_iter(mu.into_data().iter())
     }
 }

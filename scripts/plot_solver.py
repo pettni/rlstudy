@@ -32,7 +32,8 @@ for experiment_name, output in outputs:
     series = defaultdict(list)
     for row in output["history"]:
         for name, value in row["metrics"].items():
-            series[(row["unit"], name)].append((row["step"], value))
+            if value is not None:
+                series[(row["unit"], name)].append((row["step"], value))
     if not series:
         raise ValueError(f"{experiment_name} contains no history data to plot")
     experiments.append((experiment_name, series))

@@ -6,6 +6,7 @@ mod monte_carlo;
 mod policy_iteration;
 mod ppo;
 mod reinforce;
+mod sac;
 mod td;
 mod td3;
 mod truncated_policy_iteration;
@@ -15,7 +16,7 @@ mod vpg;
 use self::{
     actor_critic::ActorCriticArgs, approximate_td::ApproximateTDArgs, ddpg::DdpgArgs, dqn::DqnArgs,
     monte_carlo::MonteCarloArgs, policy_iteration::PolicyIterationArgs, ppo::PpoArgs,
-    reinforce::ReinforceArgs, td::TDArgs, td3::Td3Args,
+    reinforce::ReinforceArgs, sac::SacArgs, td::TDArgs, td3::Td3Args,
     truncated_policy_iteration::TruncatedPolicyIterationArgs, value_iteration::ValueIterationArgs,
     vpg::VanillaPolicyGradientArgs,
 };
@@ -23,9 +24,9 @@ use clap::Subcommand;
 use rlstudy::algorithms::{
     ActorCritic, ActorCriticConfig, ApproximateTD, ApproximateTDConfig, DdpgConfig, DeepQLearning,
     DeterministicPolicyGradient, DqnConfig, MonteCarlo, MonteCarloConfig, PolicyIterationConfig,
-    PpoConfig, Reinforce, ReinforceConfig, StochasticPolicyGradient, TD, TDConfig, Td3Config,
-    TruncatedPolicyIteration, TruncatedPolicyIterationConfig, ValueIterationConfig,
-    VanillaPolicyGradientConfig,
+    PpoConfig, Reinforce, ReinforceConfig, SoftActorCriticConfig, StochasticPolicyGradient, TD,
+    TDConfig, Td3Config, TruncatedPolicyIteration, TruncatedPolicyIterationConfig,
+    ValueIterationConfig, VanillaPolicyGradientConfig,
 };
 use serde::{Serialize, de::DeserializeOwned};
 use std::{fs, path::Path};
@@ -40,6 +41,7 @@ pub(super) enum Solver {
     Dqn(DqnArgs),
     Ddpg(DdpgArgs),
     Td3(Td3Args),
+    Sac(SacArgs),
     Reinforce(ReinforceArgs),
     Vpg(VanillaPolicyGradientArgs),
     Ppo(PpoArgs),
@@ -58,6 +60,7 @@ impl Solver {
             Self::Dqn(_) => "dqn",
             Self::Ddpg(_) => "ddpg",
             Self::Td3(_) => "td3",
+            Self::Sac(_) => "sac",
             Self::Reinforce(_) => "reinforce",
             Self::Vpg(_) => "vpg",
             Self::Ppo(_) => "ppo",
@@ -74,6 +77,7 @@ pub(super) enum SelectedSolver {
     Dqn(DeepQLearning),
     Ddpg(DeterministicPolicyGradient),
     Td3(DeterministicPolicyGradient),
+    Sac(SoftActorCriticConfig),
     Reinforce(Reinforce),
     StochasticPolicyGradient(SelectedStochasticPolicyGradient),
     ActorCritic(ActorCritic),
@@ -152,6 +156,11 @@ pub(super) fn build_solver(
                 parameters,
             ))
         }
+        Solver::Sac(args) => {
+            let (config, parameters): (SoftActorCriticConfig, _) =
+                resolve_config(args, config_path)?;
+            Ok((SelectedSolver::Sac(config), parameters))
+        }
         Solver::Reinforce(args) => {
             let (config, parameters): (ReinforceConfig, _) = resolve_config(args, config_path)?;
             Ok((
@@ -227,7 +236,7 @@ where
 mod tests {
     use rlstudy::algorithms::{
         ActorCriticConfig, ApproximateTDConfig, DdpgConfig, DqnConfig, PpoConfig, ReinforceConfig,
-        StochasticPolicyGradient, VanillaPolicyGradientConfig,
+        SoftActorCriticConfig, StochasticPolicyGradient, VanillaPolicyGradientConfig,
     };
 
     #[test]
@@ -318,5 +327,11 @@ mod tests {
             yaml_serde::from_str(include_str!("../../../settings/half_cheetah/ddpg.yaml")).unwrap();
 
         assert!(rlstudy::algorithms::DeterministicPolicyGradient::new(config.into()).is_ok());
+    }
+
+    #[test]
+    fn checked_in_sac_config_parses() {
+        let _: SoftActorCriticConfig =
+            yaml_serde::from_str(include_str!("../../../settings/half_cheetah/sac.yaml")).unwrap();
     }
 }

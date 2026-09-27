@@ -29,6 +29,7 @@ pub use policy_iteration::{
 };
 pub use ppo::PpoConfig;
 pub use reinforce::{Reinforce, ReinforceConfig, UpdateVariant};
+pub use sac::{SoftActorCritic, SoftActorCriticConfig};
 pub use td::{TD, TDConfig, TDVariant};
 pub use td3::Td3Config;
 pub use vpg::VanillaPolicyGradientConfig;

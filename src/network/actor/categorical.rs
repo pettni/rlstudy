@@ -8,7 +8,7 @@ use ndarray::Array1;
 
 use super::Actor;
 use crate::{
-    backend::{Device, InferenceBackend, TrainingBackend, device},
+    backend::{InferenceBackend, TrainingBackend, device},
     network::{Activation, MlpModel},
     policy::Policy,
 };
@@ -36,12 +36,6 @@ impl<B: Backend> CategoricalActor<B> {
     }
 }
 
-impl<B: Backend<Device = Device>> CategoricalActor<B> {
-    fn deterministic_actions_impl(&self, observations: Tensor<B, 2>) -> Tensor<B, 1, Int> {
-        self.forward(observations).argmax(1).squeeze_dim(1)
-    }
-}
-
 impl Actor<usize> for CategoricalActor<TrainingBackend> {
     type InferencePolicy = CategoricalActor<InferenceBackend>;
 
@@ -58,7 +52,6 @@ impl Actor<usize> for CategoricalActor<TrainingBackend> {
     fn sample_actions(
         &self,
         states: Tensor<TrainingBackend, 2>,
-        _rng: &mut dyn rand::Rng,
     ) -> (
         <usize as crate::network::action::ActionType>::TensorType,
         Tensor<TrainingBackend, 1>,
@@ -84,13 +77,13 @@ impl Policy for CategoricalActor<TrainingBackend> {
     type Observation = Array1<f64>;
     type Action = usize;
 
-    fn sample_action(&self, state: &Array1<f64>, rng: &mut dyn rand::Rng) -> Self::Action {
+    fn sample_action(&self, state: &Array1<f64>, _rng: &mut dyn rand::Rng) -> Self::Action {
         let state = Tensor::<TrainingBackend, 2>::from_data(
             TensorData::new(state.to_vec(), [1, state.len()]),
             device(),
         );
 
-        let (action, _) = self.sample_actions(state, rng);
+        let (action, _) = self.sample_actions(state);
 
         action.into_scalar().elem::<i64>() as usize
     }
@@ -106,7 +99,7 @@ impl Policy for CategoricalActor<InferenceBackend> {
             device(),
         );
 
-        let action = self.deterministic_actions_impl(state);
+        let action = self.forward(state).argmax(1).squeeze_dim::<1>(1);
 
         action.into_scalar().elem::<i64>() as usize
     }
